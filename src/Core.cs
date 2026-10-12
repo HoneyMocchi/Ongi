@@ -207,6 +207,7 @@ namespace Ongi
     {
         public readonly int RetryAfterSec;
         public bool RateLimited;
+        public bool SignedOut;               // 로그인 정보 자체가 없음(작업표시줄에서 아이콘을 숨김)
         public FetchException(string msg, int retryAfterSec = 0) : base(msg) { RetryAfterSec = retryAfterSec; }
     }
 
@@ -302,7 +303,8 @@ namespace Ongi
         public List<ChatCache> Caches = new List<ChatCache>();
         public string Error;
         public bool Busy;
-        public int RateLimitHits;            // 연속 429 횟수(지수 백오프용)
+        public bool SignedOut;               // 마지막 조회에서 로그인 정보가 없었고 보여 줄 값도 없음
+        public int RateLimitHits;           // 연속 429 횟수(지수 백오프용)
         public DateTime NextFetchUtc, LastAttemptUtc;
 
         public ProviderState(string key, string name, string title, IProvider provider)
@@ -314,6 +316,8 @@ namespace Ongi
     sealed class Settings
     {
         public string Mode = "taskbar";      // taskbar | floating
+        public string Monitors = "primary";  // 작업표시줄 모드에서 위젯을 붙일 모니터: primary | all | custom
+        public List<string> MonitorList = new List<string>(); // custom일 때 고른 모니터(Screen.DeviceName, 예: \\.\DISPLAY2)
         public int Offset = 6;               // 작업표시줄 모드: 알림 영역 왼쪽 끝에서 띄울 거리(논리 px)
         public int? FloatX, FloatY;          // 떠 있는 창 모드 위치(물리 px)
         public int RefreshSeconds = 90;
@@ -335,6 +339,10 @@ namespace Ongi
                 if (!System.IO.File.Exists(FilePath)) return s;
                 var o = J.Parse(System.IO.File.ReadAllText(FilePath));
                 s.Mode = J.Str(J.Get(o, "mode")) == "floating" ? "floating" : "taskbar";
+                string mon = J.Str(J.Get(o, "monitors"));
+                s.Monitors = mon == "all" || mon == "custom" ? mon : "primary";
+                var list = J.Get(o, "monitorList") as object[];
+                if (list != null) foreach (var m in list) { var n = m as string; if (!string.IsNullOrEmpty(n)) s.MonitorList.Add(n); }
                 s.Offset = (int)(J.Num(J.Get(o, "offset")) ?? s.Offset);
                 var fx = J.Num(J.Get(o, "floatX")); var fy = J.Num(J.Get(o, "floatY"));
                 if (fx.HasValue && fy.HasValue) { s.FloatX = (int)fx.Value; s.FloatY = (int)fy.Value; }
@@ -353,6 +361,19 @@ namespace Ongi
             return s;
         }
 
+        // 위젯을 붙일 모니터인지 봅니다. 고른 모니터가 하나도 연결되어 있지 않으면 주 모니터에 붙입니다.
+        public bool WantsMonitor(System.Windows.Forms.Screen sc)
+        {
+            if (Monitors == "all") return true;
+            if (Monitors == "custom")
+            {
+                bool any = false;
+                foreach (var a in System.Windows.Forms.Screen.AllScreens) if (MonitorList.Contains(a.DeviceName)) any = true;
+                if (any) return MonitorList.Contains(sc.DeviceName);
+            }
+            return sc.Primary;
+        }
+
         public void Save()
         {
             if (readOnly) return;
@@ -360,7 +381,7 @@ namespace Ongi
             {
                 var d = new Dictionary<string, object>
                 {
-                    { "mode", Mode }, { "offset", Offset }, { "floatX", FloatX }, { "floatY", FloatY },
+                    { "mode", Mode }, { "monitors", Monitors }, { "monitorList", MonitorList }, { "offset", Offset }, { "floatX", FloatX }, { "floatY", FloatY },
                     { "refreshSeconds", RefreshSeconds }, { "showClaude", ShowClaude }, { "showCodex", ShowCodex },
                     { "warnPercent", WarnPercent }, { "critPercent", CritPercent }, { "codexCacheMinutes", CodexCacheMinutes },
                     { "cacheAlerts", CacheAlerts }, { "alertTokens", AlertTokens }, { "alertMinutes", AlertMinutes },

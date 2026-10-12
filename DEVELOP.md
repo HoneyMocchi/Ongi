@@ -74,7 +74,11 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 
 ## 화면 구조
 
-- **작업표시줄 위젯:** `Shell_TrayWnd`의 자식(`WS_CHILD | WS_EX_LAYERED`)으로 `TrayNotifyWnd` 왼쪽에 둡니다. 알파 1 배경으로 마우스를 받고, `UpdateLayeredWindow`로 픽셀 단위 알파를 그립니다. 2초마다 위치·Z 순서를 확인하고, `TaskbarCreated`를 받으면 다시 붙습니다.
+- **작업표시줄 위젯:** `Shell_TrayWnd`의 자식(`WS_CHILD | WS_EX_LAYERED`)으로 `TrayNotifyWnd` 왼쪽에 둡니다.
+  - 설정의 `monitors`(`primary` | `all` | `custom` + `monitorList`의 `Screen.DeviceName`)에 따라 보조 작업표시줄(`Shell_SecondaryTrayWnd`)마다 하나씩 더 만듭니다. 고른 모니터가 하나도 연결되어 있지 않으면 주 모니터에 붙입니다.
+  - 보조 작업표시줄에는 `TrayNotifyWnd`가 없고 시계가 XAML 안에 그려지므로, UI 자동화로 `AutomationId=SystemTrayIcon`의 위치를 백그라운드에서 30초마다 찾습니다. 못 찾으면 오른쪽 끝에서 90px 띄웁니다.
+  - 2초마다 대상 작업표시줄 목록을 다시 확인해 모니터 연결·해제를 감지하면 위젯을 다시 만듭니다. 간격(`offset`)은 모든 위젯이 같이 씁니다.
+  - 로그인 정보가 없다는 오류(`FetchException.SignedOut`)를 받은 서비스는 작업표시줄에서 빼고 상세 패널에만 원인을 보여 줍니다. 둘 다 없으면 둘 다 그립니다. 알파 1 배경으로 마우스를 받고, `UpdateLayeredWindow`로 픽셀 단위 알파를 그립니다. 2초마다 위치·Z 순서를 확인하고, `TaskbarCreated`를 받으면 다시 붙습니다.
 - **상세 패널:** 활성화하지 않는 최상위 창입니다. 바깥을 클릭하면 닫히는데, 클릭은 `GetAsyncKeyState` 폴링으로 감지합니다.
 - **설정 창:** 저장 버튼 없이 컨트롤의 `Changed`마다 `settings.json`을 저장하고 위젯에 적용합니다.
 - **알림:** `NotifyIcon` 풍선 알림입니다. 알림 동안만 트레이 아이콘을 잠깐 켭니다.

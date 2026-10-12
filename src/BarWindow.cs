@@ -2,15 +2,22 @@
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Automation;
 using System.Windows.Forms;
 
 namespace Ongi
 {
-    // 위젯 창입니다. 작업표시줄(Shell_TrayWnd)의 자식으로 넣거나, 실패하면 항상 위에 떠 있는 창으로 띄웁니다.
+    // 위젯 창입니다. 작업표시줄(주 Shell_TrayWnd, 보조 Shell_SecondaryTrayWnd)의 자식으로 넣거나, 실패하면 항상 위에 떠 있는 창으로 띄웁니다.
+    // 작업표시줄 모드에서는 고른 모니터마다 하나씩 만듭니다.
     sealed class BarWindow : NativeWindow
     {
         readonly App app;
         IntPtr taskbar;
+        bool secondary;
+        volatile int clockMargin = -1;   // 보조 작업표시줄: 오른쪽 끝에서 시계 왼쪽까지(물리 px), -1이면 모름
+        int clockLookup;                  // 1이면 시계 위치를 찾는 중
+        DateTime clockLookedUp;
         Rectangle bounds;         // 삽입 모드: 작업표시줄 클라이언트 좌표, 떠 있는 모드: 화면 좌표
         bool hover, tracking, down, dragging, closing;
         Native.POINT downPt;
@@ -34,10 +41,14 @@ namespace Ongi
             }
         }
 
-        public bool CreateEmbedded()
+        public IntPtr Taskbar { get { return taskbar; } }
+
+        public bool CreateEmbedded(IntPtr tb)
         {
-            taskbar = Native.FindWindow("Shell_TrayWnd", null);
+            taskbar = tb;
             if (taskbar == IntPtr.Zero) { Log.Write("작업표시줄을 찾지 못했습니다"); return false; }
+            secondary = Native.ClassOf(taskbar) == "Shell_SecondaryTrayWnd";
+            if (secondary) LookupClock();
             Rectangle r;
             if (!ComputeEmbedded(out r)) return false;
 
@@ -87,11 +98,12 @@ namespace Ongi
             var sr = ScreenRect;
             var center = new Native.POINT { X = sr.X + sr.Width / 2, Y = sr.Y + sr.Height / 2 };
             var hit = Native.WindowFromPoint(center);
-            Log.Write((Embedded ? "작업표시줄 모드" : "떠 있는 모드") + " 화면좌표=" + sr + " 배율=" + Scale +
+            Log.Write((Embedded ? "작업표시줄 모드" : "떠 있는 모드") + " " + Screen.FromRectangle(sr).DeviceName + " 화면좌표=" + sr + " 배율=" + Scale +
                       " 히트=" + (hit == Handle ? "Ongi" : Native.ClassOf(hit)));
         }
 
         // 알림 영역(TrayNotifyWnd) 바로 왼쪽에 붙입니다. Offset만큼 왼쪽으로 띄웁니다.
+        // 보조 작업표시줄에는 알림 영역이 없으므로 시계 왼쪽에 붙입니다.
         bool ComputeEmbedded(out Rectangle r)
         {
             r = Rectangle.Empty;
@@ -104,11 +116,20 @@ namespace Ongi
             BottomEdge = tb.Top > screen.Top + screen.Height / 2;
 
             int h = tb.Height;
-            int w = BarRenderer.MeasureWidth(Scale, h, app.VisibleStates.Count);
-            int trayLeft = tb.Width - (int)(320 * Scale);
-            var tray = Native.FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
-            Native.RECT tr;
-            if (tray != IntPtr.Zero && Native.GetWindowRect(tray, out tr) && tr.Width > 0) trayLeft = tr.Left - tb.Left;
+            int w = BarRenderer.MeasureWidth(Scale, h, app.BarStates.Count);
+            int trayLeft;
+            if (secondary)
+            {
+                int m = clockMargin;
+                trayLeft = tb.Width - (m > 0 && m < tb.Width / 2 ? m : (int)(90 * Scale));
+            }
+            else
+            {
+                trayLeft = tb.Width - (int)(320 * Scale);
+                var tray = Native.FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
+                Native.RECT tr;
+                if (tray != IntPtr.Zero && Native.GetWindowRect(tray, out tr) && tr.Width > 0) trayLeft = tr.Left - tb.Left;
+            }
 
             int maxOffset = Math.Max(0, (int)((trayLeft - w) / Scale));
             if (app.Cfg.Offset > maxOffset) app.Cfg.Offset = maxOffset;
@@ -118,11 +139,43 @@ namespace Ongi
             return true;
         }
 
+        // 보조 작업표시줄의 시계는 XAML 안에 그려져 창 핸들이 없으므로 UI 자동화로 위치를 찾습니다.
+        // 탐색기 프로세스에 묻는 호출이라 백그라운드에서 하고, 시계 폭이 바뀔 수 있어 30초마다 다시 찾습니다.
+        void LookupClock()
+        {
+            if (Interlocked.Exchange(ref clockLookup, 1) == 1) return;
+            clockLookedUp = DateTime.UtcNow;
+            var tb = taskbar;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                int margin = -1;
+                // 작업표시줄을 막 만들었거나 여러 개를 동시에 물으면 E_FAIL이 나기도 해서 몇 번 다시 시도합니다.
+                for (int attempt = 0; attempt < 3 && margin < 0; attempt++)
+                {
+                    if (attempt > 0) Thread.Sleep(1000);
+                    try
+                    {
+                        var root = AutomationElement.FromHandle(tb);
+                        var cond = new PropertyCondition(AutomationElement.AutomationIdProperty, "SystemTrayIcon");
+                        var clock = root.FindFirst(TreeScope.Children, cond) ?? root.FindFirst(TreeScope.Descendants, cond);
+                        Native.RECT r;
+                        if (clock == null || !Native.GetWindowRect(tb, out r)) break; // 시계를 끈 경우
+                        var b = clock.Current.BoundingRectangle;
+                        if (!b.IsEmpty && b.Width > 0) margin = r.Right - (int)b.Left;
+                    }
+                    catch (Exception ex) { if (attempt == 2) Log.Write("보조 작업표시줄 시계 찾기 실패: " + ex.Message); }
+                }
+                if (margin != clockMargin && margin > 0) Log.Write("보조 작업표시줄 시계 폭=" + margin);
+                if (margin > 0) clockMargin = margin;
+                Interlocked.Exchange(ref clockLookup, 0);
+            });
+        }
+
         void PlaceFloating(int depth = 0)
         {
             Scale = Native.DpiScale(Handle);
             int h = (int)Math.Ceiling(44 * Scale);
-            int w = BarRenderer.MeasureWidth(Scale, h, app.VisibleStates.Count) + (int)(4 * Scale);
+            int w = BarRenderer.MeasureWidth(Scale, h, app.BarStates.Count) + (int)(4 * Scale);
             var pos = app.Cfg.FloatX.HasValue && app.Cfg.FloatY.HasValue ? new Point(app.Cfg.FloatX.Value, app.Cfg.FloatY.Value) : Point.Empty;
             bool visible = false;
             foreach (var sc in Screen.AllScreens) if (sc.WorkingArea.IntersectsWith(new Rectangle(pos, new Size(w, h)))) visible = true;
@@ -144,6 +197,7 @@ namespace Ongi
             if (!IsAlive || dragging) return;
             if (Embedded)
             {
+                if (secondary && (DateTime.UtcNow - clockLookedUp).TotalSeconds > 30) LookupClock();
                 Rectangle r;
                 if (!ComputeEmbedded(out r)) return;
                 if (r != bounds)
@@ -158,7 +212,9 @@ namespace Ongi
             }
             else
             {
-                if (Math.Abs(Native.DpiScale(Handle) - Scale) > 0.01f) { PlaceFloating(); Render(); }
+                // 배율이 바뀌었거나, 로그인 상태가 바뀌어 아이콘 수가 달라졌으면 크기를 다시 잡습니다.
+                int w = BarRenderer.MeasureWidth(Scale, bounds.Height, app.BarStates.Count) + (int)(4 * Scale);
+                if (Math.Abs(Native.DpiScale(Handle) - Scale) > 0.01f || w != bounds.Width) { PlaceFloating(); Render(); }
                 Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
             }
         }
@@ -169,7 +225,7 @@ namespace Ongi
             using (var bmp = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb))
             {
                 using (var g = Graphics.FromImage(bmp))
-                    BarRenderer.Render(g, bounds.Size, Scale, app.MakePalette(), app.VisibleStates, DateTime.UtcNow, app.Cfg, hover, !Embedded);
+                    BarRenderer.Render(g, bounds.Size, Scale, app.MakePalette(), app.BarStates, DateTime.UtcNow, app.Cfg, hover, !Embedded);
                 return Native.ApplyLayered(Handle, bmp);
             }
         }
@@ -209,21 +265,21 @@ namespace Ongi
                         bool wasDrag = dragging;
                         dragging = false;
                         Native.ReleaseCapture();
-                        if (wasDrag) app.Cfg.Save();
-                        else app.OnBarClick();
+                        if (wasDrag) app.OnBarDragged();
+                        else app.OnBarClick(this);
                     }
                     break;
                 case Native.WM_CAPTURECHANGED:
                     if (down && m.LParam != Handle)
                     {
                         down = false;
-                        if (dragging) { dragging = false; app.Cfg.Save(); }
+                        if (dragging) { dragging = false; app.OnBarDragged(); }
                     }
                     break;
                 case Native.WM_RBUTTONUP:
                     Native.POINT p;
                     Native.GetCursorPos(out p);
-                    app.ShowMenu(new Point(p.X, p.Y));
+                    app.ShowMenu(new Point(p.X, p.Y), this);
                     return;
                 case Native.WM_DPICHANGED:
                     if (!Embedded) { PlaceFloating(); Render(); }

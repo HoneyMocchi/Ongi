@@ -86,6 +86,18 @@ namespace Ongi
             return sb.ToString();
         }
 
+        // 주 작업표시줄과 보조 작업표시줄(다른 모니터, "모든 디스플레이에 작업 표시줄 표시"가 켜져 있을 때)을 모두 찾습니다.
+        public static System.Collections.Generic.List<IntPtr> Taskbars()
+        {
+            var list = new System.Collections.Generic.List<IntPtr>();
+            var main = FindWindow("Shell_TrayWnd", null);
+            if (main != IntPtr.Zero) list.Add(main);
+            for (IntPtr h = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Shell_SecondaryTrayWnd", null); h != IntPtr.Zero;
+                 h = FindWindowEx(IntPtr.Zero, h, "Shell_SecondaryTrayWnd", null))
+                list.Add(h);
+            return list;
+        }
+
         public static int LastLayeredError;
 
         // 32비트 ARGB 비트맵을 레이어드 창에 그대로 올립니다(픽셀 단위 알파).

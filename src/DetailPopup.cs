@@ -93,12 +93,12 @@ namespace Ongi
 
         void OnTick(object sender, EventArgs e)
         {
-            // 패널과 위젯 바깥을 누르면 닫습니다(라이트 디스미스).
+            // 패널과 위젯 바깥을 누르면 닫습니다(라이트 디스미스). 다른 모니터의 위젯을 누르면 App이 패널을 그쪽으로 옮깁니다.
             bool pressed = (Native.GetAsyncKeyState(Native.VK_LBUTTON) & 0x8000) != 0 || (Native.GetAsyncKeyState(Native.VK_RBUTTON) & 0x8000) != 0;
             if (pressed)
             {
                 var c = Cursor.Position;
-                if (!Bounds.Contains(c) && !app.BarScreenRect.Contains(c)) { HideNow(); return; }
+                if (!Bounds.Contains(c) && !app.InAnyBar(c)) { HideNow(); return; }
             }
             if (++ticks % 33 == 0) Invalidate(); // 약 5초마다 남은 시간을 다시 그립니다.
         }

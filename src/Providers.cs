@@ -54,11 +54,11 @@ namespace Ongi
             string dir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
             if (string.IsNullOrWhiteSpace(dir)) dir = Path.Combine(Paths.Home, ".claude");
             string credPath = Path.Combine(dir, ".credentials.json");
-            if (!File.Exists(credPath)) throw new FetchException("Claude Code 로그인 정보가 없습니다", 600);
+            if (!File.Exists(credPath)) throw new FetchException("Claude Code 로그인 정보가 없습니다", 600) { SignedOut = true };
 
             var oauth = J.Get(J.Parse(Util.ReadShared(credPath)), "claudeAiOauth");
             string token = J.Str(J.Get(oauth, "accessToken"));
-            if (string.IsNullOrEmpty(token)) throw new FetchException("구독(OAuth) 로그인이 아닙니다", 600);
+            if (string.IsNullOrEmpty(token)) throw new FetchException("구독(OAuth) 로그인이 아닙니다", 600) { SignedOut = true };
             var exp = J.Num(J.Get(oauth, "expiresAt"));
             if (exp.HasValue && exp.Value > 0 && Util.FromUnix(exp.Value) < DateTime.UtcNow)
                 throw new FetchException("토큰 만료 — Claude Code를 쓰면 자동 갱신됩니다", 120);
@@ -129,12 +129,12 @@ namespace Ongi
         static Snapshot FromApi(string home)
         {
             string authPath = Path.Combine(home, "auth.json");
-            if (!File.Exists(authPath)) throw new FetchException("Codex 로그인 정보가 없습니다", 600);
+            if (!File.Exists(authPath)) throw new FetchException("Codex 로그인 정보가 없습니다", 600) { SignedOut = true };
             var auth = J.Parse(Util.ReadShared(authPath));
             string token = J.Str(J.Get(auth, "tokens", "access_token"));
             string account = J.Str(J.Get(auth, "tokens", "account_id"));
             if (string.IsNullOrEmpty(token))
-                throw new FetchException(J.Get(auth, "OPENAI_API_KEY") != null ? "API 키 로그인에는 구독 한도가 없습니다" : "ChatGPT 로그인이 필요합니다", 600);
+                throw new FetchException(J.Get(auth, "OPENAI_API_KEY") != null ? "API 키 로그인에는 구독 한도가 없습니다" : "ChatGPT 로그인이 필요합니다", 600) { SignedOut = true };
 
             var headers = new Dictionary<string, string> { { "Authorization", "Bearer " + token } };
             if (!string.IsNullOrEmpty(account)) headers["ChatGPT-Account-Id"] = account;

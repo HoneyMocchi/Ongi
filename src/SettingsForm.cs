@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace Ongi
@@ -87,14 +88,15 @@ namespace Ongi
         {
             var g = Begin(e);
             var r = new RectangleF(1.5f * S, (Height - 20 * S) / 2, 39 * S, 20 * S);
-            if (on) Draw.FillRounded(g, r, r.Height / 2, T.Accent);
+            if (on && !Enabled) Draw.FillRounded(g, r, r.Height / 2, T.Track);
+            else if (on) Draw.FillRounded(g, r, r.Height / 2, T.Accent);
             else
             {
                 Draw.FillRounded(g, r, r.Height / 2, Hover ? T.FieldHover : T.Field);
                 Draw.StrokeRounded(g, r, r.Height / 2, T.Faint, 1.2f * S);
             }
             float kr = (on ? 6.5f : 5.5f) * S, kx = on ? r.Right - r.Height / 2 : r.X + r.Height / 2;
-            Draw.Dot(g, on ? T.AccentText : T.Knob, kx, r.Y + r.Height / 2, kr);
+            Draw.Dot(g, on && Enabled ? T.AccentText : T.Knob, kx, r.Y + r.Height / 2, kr);
             FocusRing(g, r, r.Height / 2);
         }
 
@@ -144,7 +146,7 @@ namespace Ongi
                 var seg = new RectangleF(x, 3 * S, widths[i], Height - 6 * S);
                 if (i == selected) Draw.FillRounded(g, seg, 5 * S, T.Selected);
                 else if (Hover && i == hoverIndex) Draw.FillRounded(g, seg, 5 * S, T.FieldHover);
-                Draw.Text(g, options[i], font, i == selected ? T.Text : T.Dim, seg.X + seg.Width / 2, seg.Y + seg.Height / 2, 0);
+                Draw.Text(g, options[i], font, !Enabled ? T.Faint : i == selected ? T.Text : T.Dim, seg.X + seg.Width / 2, seg.Y + seg.Height / 2, 0);
                 x += widths[i];
             }
             FocusRing(g, r, 7 * S);
@@ -274,13 +276,15 @@ namespace Ongi
         readonly UiTheme t;
         readonly float s;
         readonly List<Action<Graphics>> paints = new List<Action<Graphics>>();
-        readonly Segmented mode, codexTtl;
+        readonly Segmented mode, monitors, codexTtl;
+        readonly List<KeyValuePair<string, Toggle>> monitorToggles = new List<KeyValuePair<string, Toggle>>(); // (Screen.DeviceName, 스위치)
+        static readonly string[] MonitorModes = { "primary", "all", "custom" };
         readonly Toggle showClaude, showCodex, autostart, alerts;
         readonly Stepper refresh, warn, crit, tokens, minutes;
         static readonly int[] TtlChoices = { 0, 5, 30, 60 };
         float y;
 
-        // apply: 저장 후 호출됩니다. 인자는 위젯을 다시 만들어야 하는지(위치·표시 서비스 변경) 여부입니다.
+        // apply: 저장 후 호출됩니다. 인자는 위젯을 다시 만들어야 하는지(위치·모니터·표시 서비스 변경) 여부입니다.
         public SettingsForm(Settings cfg, Action<bool> apply, float scale, bool? dark = null)
         {
             this.cfg = cfg;
@@ -307,6 +311,31 @@ namespace Ongi
             Section("표시", true);
             mode = new Segmented(t, s, new[] { "작업표시줄", "떠 있는 창" }, c.Mode == "floating" ? 1 : 0);
             Row("위치", null, mode, W);
+            // 작업표시줄 모드에서 위젯을 붙일 모니터입니다. 모니터가 하나뿐이면 줄을 만들지 않습니다.
+            monitors = new Segmented(t, s, new[] { "주 모니터", "모든 모니터", "직접 선택" }, Math.Max(0, Array.IndexOf(MonitorModes, c.Monitors)));
+            var screens = Screen.AllScreens.OrderBy(sc => sc.Bounds.X).ThenBy(sc => sc.Bounds.Y).ToArray();
+            if (screens.Length > 1)
+            {
+                Row("모니터", "작업표시줄 위치일 때 적용", monitors, W);
+                bool listed = screens.Any(sc => c.MonitorList.Contains(sc.DeviceName));
+                for (int i = 0; i < screens.Length; i++)
+                {
+                    var sc = screens[i];
+                    var tg = new Toggle(t, s, listed ? c.MonitorList.Contains(sc.DeviceName) : sc.Primary);
+                    Row(MonitorName(sc), sc.Bounds.Width + "×" + sc.Bounds.Height + " · " + Side(i, screens.Length) + (sc.Primary ? " · 주 모니터" : ""), tg, W, 14);
+                    monitorToggles.Add(new KeyValuePair<string, Toggle>(sc.DeviceName, tg));
+                    // 하나도 안 고를 수는 없게 합니다.
+                    tg.Changed += (o, e) => { if (!monitorToggles.Any(m => m.Value.Checked)) tg.Checked = true; };
+                }
+                Action enable = () =>
+                {
+                    monitors.Enabled = mode.Selected == 0;
+                    foreach (var m in monitorToggles) m.Value.Enabled = mode.Selected == 0 && monitors.Selected == 2;
+                };
+                mode.Changed += (o, e) => enable();
+                monitors.Changed += (o, e) => enable();
+                enable();
+            }
             showClaude = new Toggle(t, s, c.ShowClaude);
             Row("Claude", null, showClaude, W);
             showCodex = new Toggle(t, s, c.ShowCodex);
@@ -358,8 +387,24 @@ namespace Ongi
             Location = new Point(wa.Left + (wa.Width - Width) / 2, wa.Top + (wa.Height - Height) / 2);
 
             // 초기값을 다 넣은 뒤에 연결해야 창을 여는 것만으로 저장되지 않습니다.
-            foreach (var ctl in new UiControl[] { mode, showClaude, showCodex, autostart, refresh, warn, crit, alerts, tokens, minutes, codexTtl })
-                ctl.Changed += (o, e) => ApplyNow();
+            var live = new List<UiControl> { mode, showClaude, showCodex, autostart, refresh, warn, crit, alerts, tokens, minutes, codexTtl };
+            if (monitorToggles.Count > 0) { live.Add(monitors); live.AddRange(monitorToggles.Select(m => (UiControl)m.Value)); }
+            foreach (var ctl in live) ctl.Changed += (o, e) => ApplyNow();
+        }
+
+        // \\.\DISPLAY2 → 디스플레이 2
+        static string MonitorName(Screen sc)
+        {
+            string n = sc.DeviceName.TrimStart('\\', '.');
+            return n.StartsWith("DISPLAY", StringComparison.OrdinalIgnoreCase) ? "디스플레이 " + n.Substring(7) : n;
+        }
+
+        // 왼쪽부터 놓인 순서를 말로 바꿉니다(모니터 번호가 실제 배치와 다를 때 찾기 쉽게).
+        static string Side(int i, int count)
+        {
+            if (i == 0) return "왼쪽";
+            if (i == count - 1) return "오른쪽";
+            return count == 3 ? "가운데" : "왼쪽에서 " + (i + 1) + "번째";
         }
 
         void Section(string title, bool first)
@@ -377,14 +422,15 @@ namespace Ongi
             y += 28 * s;
         }
 
-        void Row(string label, string hint, Control control, int W)
+        // indent: 위 항목에 딸린 하위 항목을 들여 씁니다(논리 px).
+        void Row(string label, string hint, Control control, int W, float indent = 0)
         {
-            float h = (hint == null ? 42 : 50) * s, cy = y + h / 2;
+            float h = (hint == null ? 42 : 50) * s, cy = y + h / 2, lx = (22 + indent) * s;
             var body = Draw.Font("Segoe UI", 14f * s);
             var small = Draw.Font("Segoe UI", 12f * s);
             float ly = hint == null ? cy : cy - 9 * s;
-            paints.Add(g => Draw.Text(g, label, body, control.Enabled ? t.Text : t.Faint, 22 * s, ly));
-            if (hint != null) paints.Add(g => Draw.Text(g, hint, small, t.Faint, 22 * s, cy + 11 * s));
+            paints.Add(g => Draw.Text(g, label, body, control.Enabled ? t.Text : t.Faint, lx, ly));
+            if (hint != null) paints.Add(g => Draw.Text(g, hint, small, t.Faint, lx, cy + 11 * s));
             control.Location = new Point(W - (int)(22 * s) - control.Width, (int)(cy - control.Height / 2f));
             control.EnabledChanged += (o, e) => { control.Invalidate(); Invalidate(); };
             Controls.Add(control);
@@ -420,9 +466,17 @@ namespace Ongi
         void ApplyNow()
         {
             var c = cfg;
-            string oldMode = c.Mode;
+            string oldMode = c.Mode, oldMonitors = c.Monitors + "|" + string.Join(",", c.MonitorList);
             bool oldClaude = c.ShowClaude, oldCodex = c.ShowCodex;
             c.Mode = mode.Selected == 1 ? "floating" : "taskbar";
+            if (monitorToggles.Count > 0)
+            {
+                c.Monitors = MonitorModes[monitors.Selected];
+                // 목록은 직접 선택일 때만 씁니다. 지금 연결되어 있지 않은 모니터를 골라 둔 것은 그대로 둡니다.
+                if (c.Monitors == "custom")
+                    c.MonitorList = c.MonitorList.Where(n => !monitorToggles.Any(m => m.Key == n))
+                        .Concat(monitorToggles.Where(m => m.Value.Checked).Select(m => m.Key)).ToList();
+            }
             c.ShowClaude = showClaude.Checked;
             c.ShowCodex = showCodex.Checked;
             c.RefreshSeconds = refresh.Value;
@@ -435,7 +489,7 @@ namespace Ongi
             c.Save();
             try { if (Autostart.IsEnabled() != autostart.Checked) Autostart.Set(autostart.Checked); }
             catch (Exception ex) { Log.Write("자동 실행 설정 실패: " + ex.Message); }
-            apply(oldMode != c.Mode || oldClaude != c.ShowClaude || oldCodex != c.ShowCodex);
+            apply(oldMode != c.Mode || oldMonitors != c.Monitors + "|" + string.Join(",", c.MonitorList) || oldClaude != c.ShowClaude || oldCodex != c.ShowCodex);
         }
     }
 }

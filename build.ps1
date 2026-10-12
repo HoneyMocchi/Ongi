@@ -70,8 +70,14 @@ $running = @(Get-Process Ongi -ErrorAction SilentlyContinue | Where-Object { $_.
 $running | Stop-Process -Force
 if ($running.Count -gt 0) { Start-Sleep -Milliseconds 300 }
 
-$refs = 'mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.Forms', 'System.Web.Extensions' |
-    ForEach-Object { '/r:' + (Join-Path $ref "$_.dll") }
+# UI 자동화(보조 작업표시줄의 시계 위치 찾기)는 WPF 어셈블리라, 참조 어셈블리가 없을 때는 런타임 폴더의 WPF 하위 폴더에서 찾습니다.
+$refs = 'mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.Forms', 'System.Web.Extensions',
+        'WindowsBase', 'UIAutomationClient', 'UIAutomationTypes' |
+    ForEach-Object {
+        $dll = Join-Path $ref "$_.dll"
+        if (-not (Test-Path $dll)) { $dll = Join-Path $ref "WPF\$_.dll" }
+        '/r:' + $dll
+    }
 $sources = Get-ChildItem (Join-Path $root 'src') -Filter *.cs | ForEach-Object { $_.FullName }
 
 & $csc /nologo /noconfig /nostdlib+ /target:winexe /platform:anycpu /optimize+ /langversion:7.3 /codepage:65001 /warn:4 `

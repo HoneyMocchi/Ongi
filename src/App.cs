@@ -45,7 +45,9 @@ namespace Ongi
         readonly HostForm host;
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 1000 };
         readonly DateTime started = DateTime.UtcNow;
-        BarWindow bar;
+        readonly List<BarWindow> bars = new List<BarWindow>();
+        BarWindow popupBar;                  // 상세 패널을 연 위젯
+        string barTargets = "";              // 위젯을 만들 때 붙이려던 작업표시줄 목록(모니터 연결·해제 감지용)
         DetailPopup popup;
         DateTime recreateAt = DateTime.MaxValue, lastPopupHide;
         int tick, alertHideTick;
@@ -72,7 +74,7 @@ namespace Ongi
             var unused = host.Handle;
 
             lastDark = Palette.SystemDark();
-            CreateBar();
+            CreateBars();
             // 재시작 직후 캐시 값이 3분 안쪽이면 바로 다시 부르지 않습니다(재시작이 잦을 때 429 방지).
             foreach (var st in States)
                 st.NextFetchUtc = st.Data != null && st.Data.Source == "API" && st.Data.UpdatedUtc.AddSeconds(180) > DateTime.UtcNow
@@ -80,6 +82,7 @@ namespace Ongi
             timer.Tick += OnTick;
             timer.Start();
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
             Log.Write("시작" + (opt.Mock ? " (샘플 데이터)" : ""));
         }
 
@@ -88,23 +91,65 @@ namespace Ongi
             get { return States.Where(s => s.Key == "claude" ? Cfg.ShowClaude : Cfg.ShowCodex).ToList(); }
         }
 
-        public Rectangle BarScreenRect { get { return bar != null ? bar.ScreenRect : Rectangle.Empty; } }
+        // 작업표시줄 위젯에 그릴 서비스: 로그인 정보가 아예 없는 서비스는 자리를 차지하지 않게 뺍니다(전부 없으면 다 보여 줌).
+        public List<ProviderState> BarStates
+        {
+            get
+            {
+                var v = VisibleStates;
+                var signedIn = v.Where(s => !s.SignedOut).ToList();
+                return signedIn.Count > 0 ? signedIn : v;
+            }
+        }
+
+        public bool InAnyBar(Point screen)
+        {
+            foreach (var b in bars) if (b.IsAlive && b.ScreenRect.Contains(screen)) return true;
+            return false;
+        }
 
         public Palette MakePalette() { return new Palette(lastDark, Cfg); }
 
-        void CreateBar()
+        bool BarsAlive { get { return bars.Count > 0 && bars.All(b => b.IsAlive); } }
+
+        // 설정에서 고른 모니터의 작업표시줄 목록입니다.
+        List<IntPtr> TargetTaskbars()
+        {
+            var list = new List<IntPtr>();
+            if (Cfg.Mode != "taskbar") return list;
+            foreach (var tb in Native.Taskbars())
+                if (Cfg.WantsMonitor(Screen.FromHandle(tb))) list.Add(tb);
+            return list;
+        }
+
+        static string Signature(List<IntPtr> list) { return string.Join(",", list.Select(h => h.ToString())); }
+
+        void CreateBars()
         {
             recreateAt = DateTime.MaxValue;
-            if (bar != null) { bar.Destroy(); bar = null; }
-            var b = new BarWindow(this);
-            bool ok = Cfg.Mode == "taskbar" && b.CreateEmbedded();
-            if (!ok)
+            DestroyBars();
+            var targets = TargetTaskbars();
+            barTargets = Signature(targets);
+            foreach (var tb in targets)
             {
-                b = new BarWindow(this);
-                ok = b.CreateFloating();
+                var b = new BarWindow(this);
+                if (b.CreateEmbedded(tb)) bars.Add(b);
             }
-            if (ok) bar = b;
-            else recreateAt = DateTime.UtcNow.AddSeconds(5);
+            // 작업표시줄에 하나도 못 붙였으면(세로 작업표시줄 등) 떠 있는 창 하나로 띄웁니다.
+            if (bars.Count == 0)
+            {
+                var b = new BarWindow(this);
+                if (b.CreateFloating()) bars.Add(b);
+                else recreateAt = DateTime.UtcNow.AddSeconds(5);
+            }
+        }
+
+        void DestroyBars()
+        {
+            HidePopup();
+            popupBar = null;
+            foreach (var b in bars) b.Destroy();
+            bars.Clear();
         }
 
         void OnTick(object sender, EventArgs e)
@@ -114,13 +159,18 @@ namespace Ongi
             var now = DateTime.UtcNow;
             if (Opt.ExitAfter > 0 && (now - started).TotalSeconds >= Opt.ExitAfter) { ExitApp(); return; }
 
-            if (bar == null || !bar.IsAlive)
+            if (!BarsAlive)
             {
-                if (bar != null && recreateAt == DateTime.MaxValue) recreateAt = now.AddSeconds(2);
-                if (now >= recreateAt) CreateBar();
+                if (bars.Count > 0 && recreateAt == DateTime.MaxValue) recreateAt = now.AddSeconds(2);
+                if (now >= recreateAt) CreateBars();
             }
-            else if (tick % 2 == 0) bar.Reposition();
-            if (tick == 3 && bar != null && bar.IsAlive) bar.LogPlacement();
+            else if (tick % 2 == 0)
+            {
+                // 모니터를 연결·해제했거나 보조 작업표시줄이 새로 생겼으면 다시 만듭니다.
+                if (Signature(TargetTaskbars()) != barTargets) { Log.Write("작업표시줄 구성 변경 감지"); CreateBars(); }
+                else foreach (var b in bars) b.Reposition();
+            }
+            if (tick == 3) foreach (var b in bars) if (b.IsAlive) b.LogPlacement();
 
             foreach (var st in VisibleStates)
                 if (!st.Busy && now >= st.NextFetchUtc) StartFetch(st);
@@ -204,7 +254,7 @@ namespace Ongi
             {
                 alertIcon = new NotifyIcon { Text = "Ongi" };
                 try { alertIcon.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { alertIcon.Icon = SystemIcons.Information; }
-                alertIcon.BalloonTipClicked += (s, e) => { alertIcon.Visible = false; if (popup == null || !popup.Visible) OnBarClick(); };
+                alertIcon.BalloonTipClicked += (s, e) => { alertIcon.Visible = false; if ((popup == null || !popup.Visible) && bars.Count > 0) OnBarClick(bars[0]); };
             }
             var sb = new System.Text.StringBuilder();
             foreach (var c in due.OrderBy(c => c.ExpiresUtc))
@@ -244,11 +294,13 @@ namespace Ongi
         void OnFetched(ProviderState st, Snapshot snap, Exception err)
         {
             st.Busy = false;
+            bool wasSignedOut = st.SignedOut;
             var now = DateTime.UtcNow;
             int refresh = PollInterval(st, now);
             if (snap != null)
             {
                 st.RateLimitHits = 0;
+                st.SignedOut = false;
                 // 로그에서 읽은 값이 캐시보다 오래되었으면 버립니다.
                 if (st.Data == null || snap.UpdatedUtc >= st.Data.UpdatedUtc.AddSeconds(-1)) st.Data = snap;
                 st.Error = snap.Note;
@@ -264,6 +316,7 @@ namespace Ongi
                 string msg = fe != null ? fe.Message : "오류: " + err.Message;
                 if (msg != st.Error) Log.Write(st.Name + " 조회 실패: " + msg);
                 st.Error = msg;
+                st.SignedOut = fe != null && fe.SignedOut;
                 int delay = Math.Max(refresh, fe != null ? fe.RetryAfterSec : 300);
                 if (fe != null && fe.RateLimited)
                 {
@@ -273,6 +326,8 @@ namespace Ongi
                 }
                 st.NextFetchUtc = now.AddSeconds(delay);
             }
+            // 로그인 상태가 바뀌면 위젯에 그릴 아이콘 수가 달라지므로 크기를 바로 다시 잡습니다.
+            if (wasSignedOut != st.SignedOut) foreach (var b in bars) b.Reposition();
             Redraw(true);
         }
 
@@ -294,22 +349,25 @@ namespace Ongi
 
         void Redraw(bool reflowPopup)
         {
-            if (bar != null && bar.IsAlive) bar.Render();
+            foreach (var b in bars) if (b.IsAlive) b.Render();
             if (popup != null && popup.Visible)
             {
-                if (reflowPopup && bar != null) popup.Reflow(bar.ScreenRect, PopupAbove());
+                if (reflowPopup && popupBar != null && popupBar.IsAlive) popup.Reflow(popupBar.ScreenRect, PopupAbove(popupBar));
                 else popup.Invalidate();
             }
         }
 
-        bool PopupAbove() { return bar == null || !bar.Embedded || bar.BottomEdge; }
+        static bool PopupAbove(BarWindow b) { return !b.Embedded || b.BottomEdge; }
 
-        public void OnBarClick()
+        public void OnBarClick(BarWindow bar)
         {
-            if (popup != null && popup.Visible) { popup.HideNow(); return; }
-            if ((DateTime.UtcNow - lastPopupHide).TotalMilliseconds < 200 || bar == null) return;
+            // 다른 모니터의 위젯을 누르면 패널을 그쪽으로 옮깁니다.
+            if (popup != null && popup.Visible && bar == popupBar) { popup.HideNow(); return; }
+            if (popup != null && popup.Visible) popup.HideNow();
+            else if ((DateTime.UtcNow - lastPopupHide).TotalMilliseconds < 200) return;
             if (popup == null) popup = new DetailPopup(this);
-            popup.ShowNear(bar.ScreenRect, bar.Scale, PopupAbove());
+            popupBar = bar;
+            popup.ShowNear(bar.ScreenRect, bar.Scale, PopupAbove(bar));
             // 패널을 열 때 오래된 값은 바로 다시 조회합니다(Claude는 429를 피하려고 2분, 요청 제한 중이면 건너뜀).
             foreach (var st in VisibleStates)
                 if (!st.Busy && st.RateLimitHits == 0 && (DateTime.UtcNow - st.LastAttemptUtc).TotalSeconds > (st.Key == "claude" ? 120 : 30))
@@ -320,22 +378,35 @@ namespace Ongi
 
         public void OnPopupHidden() { lastPopupHide = DateTime.UtcNow; }
 
+        // 드래그로 옮긴 간격(Offset)은 모든 작업표시줄 위젯이 같이 씁니다.
+        public void OnBarDragged()
+        {
+            Cfg.Save();
+            foreach (var b in bars) b.Reposition();
+        }
+
         public void OnBarLost()
         {
-            // 탐색기 재시작 등으로 부모 작업표시줄이 사라진 경우입니다.
-            try { host.BeginInvoke((Action)(() => { bar = null; recreateAt = DateTime.UtcNow.AddSeconds(2); })); } catch { }
+            // 탐색기 재시작이나 모니터 해제로 부모 작업표시줄이 사라진 경우입니다. 남은 위젯도 같이 다시 만듭니다.
+            try { host.BeginInvoke((Action)(() => { if (recreateAt == DateTime.MaxValue) recreateAt = DateTime.UtcNow.AddSeconds(2); })); } catch { }
         }
 
         public void OnTaskbarCreated()
         {
             Log.Write("작업표시줄 재생성 감지");
             recreateAt = DateTime.UtcNow.AddSeconds(2);
-            if (bar != null) { bar.Destroy(); bar = null; }
+            DestroyBars();
+        }
+
+        void OnDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            // 보조 작업표시줄은 디스플레이 변경 뒤 조금 늦게 생기므로 잠시 기다렸다가 다시 붙입니다(더 늦게 생기면 2초 점검이 잡음).
+            try { host.BeginInvoke((Action)(() => { DestroyBars(); recreateAt = DateTime.UtcNow.AddSeconds(2); })); } catch { }
         }
 
         public void OnSecondInstance()
         {
-            CreateBar();
+            CreateBars();
             foreach (var st in VisibleStates) if (!st.Busy) st.NextFetchUtc = DateTime.UtcNow;
         }
 
@@ -352,7 +423,7 @@ namespace Ongi
             catch { }
         }
 
-        public void ShowMenu(Point screen)
+        public void ShowMenu(Point screen, BarWindow bar)
         {
             HidePopup();
             Native.ApplyMenuTheme(lastDark);
@@ -366,7 +437,7 @@ namespace Ongi
             Add(m, 9, "종료");
 
             uint flags = Native.TPM_RETURNCMD | Native.TPM_RIGHTBUTTON | Native.TPM_RIGHTALIGN;
-            if (bar != null && bar.Embedded && bar.BottomEdge) flags |= Native.TPM_BOTTOMALIGN;
+            if (bar.Embedded && bar.BottomEdge) flags |= Native.TPM_BOTTOMALIGN;
             Native.SetForegroundWindow(host.Handle);
             int cmd = Native.TrackPopupMenuEx(m, flags, screen.X, screen.Y, host.Handle, IntPtr.Zero);
             Native.DestroyMenu(m);
@@ -382,7 +453,7 @@ namespace Ongi
                 case 1:
                     foreach (var st in VisibleStates) if (!st.Busy) st.NextFetchUtc = DateTime.UtcNow;
                     break;
-                case 4: Cfg.Offset = 6; Cfg.FloatX = Cfg.FloatY = null; Cfg.Save(); CreateBar(); break;
+                case 4: Cfg.Offset = 6; Cfg.FloatX = Cfg.FloatY = null; Cfg.Save(); CreateBars(); break;
                 case 8: OpenSettings(); break;
                 case 9: ExitApp(); break;
             }
@@ -391,16 +462,16 @@ namespace Ongi
         public void OpenSettings()
         {
             if (settings != null && !settings.IsDisposed) { settings.Activate(); return; }
-            settings = new SettingsForm(Cfg, ApplySettings, bar != null ? bar.Scale : 1f);
+            settings = new SettingsForm(Cfg, ApplySettings, bars.Count > 0 ? bars[0].Scale : 1f);
             settings.FormClosed += (o, e) => settings = null;
             settings.Show();
             settings.Activate();
         }
 
-        // 설정 창에서 저장하면 불립니다. 위치·표시 서비스가 바뀌었으면 위젯을 다시 만듭니다.
+        // 설정 창에서 저장하면 불립니다. 위치·모니터·표시 서비스가 바뀌었으면 위젯을 다시 만듭니다.
         public void ApplySettings(bool recreateBar)
         {
-            if (recreateBar) CreateBar();
+            if (recreateBar) CreateBars();
             foreach (var st in VisibleStates)
                 if (!st.Busy && st.RateLimitHits == 0)
                 {
@@ -424,7 +495,8 @@ namespace Ongi
             exiting = true;
             timer.Stop();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-            if (bar != null) bar.Destroy();
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            foreach (var b in bars) b.Destroy();
             if (popup != null) popup.Dispose();
             if (settings != null && !settings.IsDisposed) settings.Close();
             if (alertIcon != null) { alertIcon.Visible = false; alertIcon.Dispose(); }
