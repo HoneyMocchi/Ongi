@@ -288,6 +288,8 @@ namespace Ongi
                     new ChatCache { Key = key, Id = "a", Title = "작업표시줄 위젯 만들기", LastUtc = now.AddMinutes(-8), TtlSec = 3600, CachedTokens = 267000 },
                     new ChatCache { Key = key, Id = "b", Title = "로그인 버그 추적", LastUtc = now.AddMinutes(-51), TtlSec = 3600, CachedTokens = 120000 },
                     new ChatCache { Key = key, Id = "c", Title = "릴리스 노트 작성", LastUtc = now.AddMinutes(-55.5), TtlSec = 3600, CachedTokens = 88000 },
+                    new ChatCache { Key = key, Id = "e", Title = "결제 모듈 리팩터링", LastUtc = now.AddMinutes(-62), TtlSec = 3600, CachedTokens = 536000 },
+                    new ChatCache { Key = key, Id = "f", Title = "문서 초안 다듬기", LastUtc = now.AddMinutes(-64), TtlSec = 3600, CachedTokens = 42000 },
                 };
             return new List<ChatCache>
             {

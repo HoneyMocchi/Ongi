@@ -174,7 +174,7 @@ namespace Ongi
         void PlaceFloating(int depth = 0)
         {
             Scale = Native.DpiScale(Handle);
-            int h = (int)Math.Ceiling(44 * Scale);
+            int h = (int)Math.Ceiling((BarRenderer.IconLogical + 14) * Scale);
             int w = BarRenderer.MeasureWidth(Scale, h, app.BarStates.Count) + (int)(4 * Scale);
             var pos = app.Cfg.FloatX.HasValue && app.Cfg.FloatY.HasValue ? new Point(app.Cfg.FloatX.Value, app.Cfg.FloatY.Value) : Point.Empty;
             bool visible = false;

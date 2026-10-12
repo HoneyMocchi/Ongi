@@ -165,12 +165,28 @@ namespace Ongi
     //   아래 점 5개      : 주간 사용률. 점 1개 = 20%, 채우다 만 점은 그만큼 불투명도로 표시
     //   모양             : Claude는 원, GPT는 둥근 사각형
     //   전체 불투명도    : 값이 오래되었거나 없으면 흐리게
+    //   안쪽 액체        : 가장 최근 대화의 프롬프트 캐시 남은 비율(수위)과 남은 분(차분한 색). 10분 미만이면 배지로 바뀜
+    //   안쪽 위 작은 점  : 캐시가 살아 있는 대화가 둘 이상일 때 대화 수(색 = 각 대화의 남은 비율)
+    //   오른쪽 위 배지   : 캐시 10분 미만이면 m:ss, 한도가 다 찼으면 풀리는 시간(빨강)
+    sealed class GaugeExtras
+    {
+        public double? Liquid;
+        public Color LiquidColor;
+        public List<Color> ChatDots;
+        public string Badge;
+        public Color BadgeFill, BadgeText;
+    }
+
     static class Gauge
     {
         public static GaugeShape ShapeOf(string key) { return key == "claude" ? GaugeShape.Circle : GaugeShape.Squircle; }
 
+        // 배지가 아이콘 오른쪽으로 삐져나오는 폭(논리 px, 아이콘 30 기준)
+        public const float BadgeOverhang = 10f;
+
         public static void Render(Graphics g, GaugeShape shape, float cx, float cy, float size, double? ring, double? week,
-                                  Color ringColor, Color weekColor, Color track, string number, Color numberColor, float opacity)
+                                  Color ringColor, Color weekColor, Color track, string number, Color numberColor, float opacity,
+                                  GaugeExtras extras = null)
         {
             float k = size / 30f;
             float stroke = 3f * k;
@@ -180,6 +196,9 @@ namespace Ongi
             float len = cum[cum.Length - 1];
             float spacing = 4.4f * k, dotR = 1.5f * k;
             float gap = 4 * spacing + 2 * dotR + stroke + 2.4f * k;
+
+            if (extras != null && extras.Liquid.HasValue && extras.Liquid.Value > 0)
+                DrawLiquid(g, shape, cx, cy, r, stroke, k, extras.Liquid.Value, Palette.Fade(extras.LiquidColor, opacity));
 
             Color tr = Palette.Fade(track, opacity);
             using (var pen = new Pen(tr, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
@@ -206,11 +225,53 @@ namespace Ongi
                 }
             }
 
+            if (extras != null && extras.ChatDots != null && extras.ChatDots.Count > 1)
+            {
+                int n = Math.Min(4, extras.ChatDots.Count);
+                for (int i = 0; i < n; i++)
+                    Draw.Dot(g, Palette.Fade(extras.ChatDots[i], opacity * 0.85), cx + (i - (n - 1) / 2f) * 3.2f * k, cy - 8.2f * k, 1.05f * k);
+            }
+
             if (number != null)
             {
                 float px = (number.Length >= 3 ? 10.5f : 13f) * k;
                 Draw.Glyphs(g, number, Draw.Font("Segoe UI Semibold", px), Palette.Fade(numberColor, opacity), cx, cy);
             }
+
+            if (extras != null && extras.Badge != null)
+                DrawBadge(g, cx + 14f * k, cy - 13.5f * k, k, extras.Badge, Palette.Fade(extras.BadgeFill, opacity), extras.BadgeText);
+        }
+
+        // 링 안쪽을 잘라 액체를 채웁니다. 수면은 아주 얕은 물결입니다.
+        static void DrawLiquid(Graphics g, GaugeShape shape, float cx, float cy, float r, float stroke, float k, double level, Color color)
+        {
+            float inset = stroke / 2 + 0.9f * k, ir = r - inset, span = 2 * ir;
+            float top = cy + ir - span * (float)Math.Min(1, level);
+            using (var clip = new GraphicsPath())
+            using (var water = new GraphicsPath())
+            using (var b = new SolidBrush(color))
+            {
+                if (shape == GaugeShape.Circle) clip.AddEllipse(cx - ir, cy - ir, span, span);
+                else clip.AddPath(Draw.Rounded(new RectangleF(cx - ir, cy - ir, span, span), Math.Max(1, r * 0.42f - inset)), false);
+                var pts = new List<PointF>();
+                for (float x = cx - ir - 2; x <= cx + ir + 2; x += 1.5f * k)
+                    pts.Add(new PointF(x, top + 0.55f * k * (float)Math.Sin((x - cx) / (2.6f * k))));
+                pts.Add(new PointF(cx + ir + 2, cy + ir + 2));
+                pts.Add(new PointF(cx - ir - 2, cy + ir + 2));
+                water.AddPolygon(pts.ToArray());
+                var saved = g.Clip;
+                g.SetClip(clip, CombineMode.Intersect);
+                g.FillPath(b, water);
+                g.Clip = saved;
+            }
+        }
+
+        static void DrawBadge(Graphics g, float x, float y, float k, string text, Color fill, Color textColor)
+        {
+            var f = Draw.Font("Segoe UI Semibold", 7.4f * k);
+            float h = 9.5f * k, w = Math.Max(h, Draw.Measure(g, text, f) + 4.5f * k);
+            Draw.FillRounded(g, new RectangleF(x - w / 2, y - h / 2, w, h), h / 2, fill);
+            Draw.Glyphs(g, text, f, textColor, x, y);
         }
 
         // 아래 가운데에서 시작해 왼쪽 → 위 → 오른쪽 → 아래 가운데로 돌아오는 닫힌 경로입니다.
@@ -277,14 +338,16 @@ namespace Ongi
         }
 
         // 상태별 아이콘 값을 정리해 그립니다(위젯과 상세 패널이 함께 씁니다).
-        public static void ForState(Graphics g, ProviderState st, float cx, float cy, float size, Palette p, DateTime now)
+        // badge: 작업표시줄 위젯처럼 시간 숫자를 아이콘에 붙일지(상세 패널은 옆에 정확한 시간이 있어 뺍니다)
+        public static void ForState(Graphics g, ProviderState st, float cx, float cy, float size, Palette p, DateTime now, bool badge = true)
         {
             var d = st.Data;
             var brand = p.Brand(st.Key);
             var shape = ShapeOf(st.Key);
+            var extras = Extras(st, p, now, badge);
             if (d == null)
             {
-                Render(g, shape, cx, cy, size, null, null, brand, brand, p.Track, st.Busy ? "…" : "—", p.Text, 0.45f);
+                Render(g, shape, cx, cy, size, null, null, brand, brand, p.Track, st.Busy ? "…" : "—", p.Text, 0.45f, extras);
                 return;
             }
             var main = d.Session ?? d.Weekly;
@@ -293,22 +356,53 @@ namespace Ongi
             bool stale = st.Error != null && (now - d.UpdatedUtc).TotalMinutes > 15;
             string num = main == null ? "—" : rp >= 100 ? "100" : Math.Floor(Math.Max(0, rp)).ToString("0");
             Render(g, shape, cx, cy, size, rp, wp, p.Level(rp, brand), p.Level(wp ?? 0, brand), p.Track,
-                   num, p.IsHot(rp) ? p.Level(rp, p.Text) : p.Text, stale ? 0.5f : 1f);
+                   num, p.IsHot(rp) ? p.Level(rp, p.Text) : p.Text, stale ? 0.5f : 1f, extras);
+        }
+
+        // 한도가 다 찼으면 배지에 풀리는 시간(캐시는 의미가 없음). 아니면 가장 최근 대화의 캐시를
+        // 10분 이상이면 액체로, 10분 미만이면 배지 타이머로 보여 줍니다.
+        static GaugeExtras Extras(ProviderState st, Palette p, DateTime now, bool badge)
+        {
+            var x = new GaugeExtras { BadgeText = p.BadgeText };
+            var d = st.Data;
+            if (d != null)
+            {
+                UsageWindow full = null;
+                if (d.Weekly != null && d.Weekly.Effective(now) >= 100) full = d.Weekly;
+                else if (d.Session != null && d.Session.Effective(now) >= 100) full = d.Session;
+                if (full != null && full.ResetUtc.HasValue && full.ResetUtc.Value > now)
+                {
+                    if (badge) { x.Badge = Util.Compact(full.ResetUtc.Value - now); x.BadgeFill = p.Crit; }
+                    return x;
+                }
+            }
+            var hot = ChatCache.HotList(st.Caches, now);
+            if (hot.Count == 0) return x;
+            double f = hot[0].Fraction(now);
+            var left = hot[0].Remaining(now);
+            if (left.TotalMinutes >= 10 || !badge) { x.Liquid = f; x.LiquidColor = p.Liquid(f); }
+            else { x.Badge = Util.Timer(left); x.BadgeFill = p.Heat(f); }
+            x.ChatDots = hot.Select(c => p.Heat(c.Fraction(now))).ToList();
+            return x;
         }
     }
 
-    // 작업표시줄 위젯: [아이콘] 남은시간  [아이콘] 남은시간   (100% 배율에서 폭 약 150px)
+    // 작업표시줄 위젯: [아이콘][아이콘]  캐시·한도 시간은 아이콘 안(액체·배지)에 담습니다. (100% 배율에서 폭 약 94px)
     static class BarRenderer
     {
-        const float Pad = 7, Gap = 4, TimeW = 31, UnitGap = 9;
+        const float Pad = 5, UnitGap = 4;
 
-        static float IconSize(float s, int height) { return Math.Max(16 * s, Math.Min(30 * s, height - 12 * s)); }
+        // 설정의 아이콘 크기(논리 px). 48px 작업표시줄에서 38이면 배지 위쪽이 가장자리에 거의 닿으므로 그보다 키우지 않습니다.
+        public static int IconLogical = 34;
 
-        static float UnitWidth(float s, int height) { return IconSize(s, height) + (Gap + TimeW) * s; }
+        static float IconSize(float s, int height) { return Math.Max(16 * s, Math.Min(IconLogical * s, height - 10 * s)); }
+
+        static float UnitWidth(float s, int height) { float icon = IconSize(s, height); return icon + Gauge.BadgeOverhang * icon / 30f; }
 
         public static int MeasureWidth(float s, int height, int rows)
         {
-            return (int)Math.Ceiling(2 * Pad * s + rows * UnitWidth(s, height) + Math.Max(0, rows - 1) * UnitGap * s);
+            // 오른쪽 끝은 패딩 없이 마지막 아이콘의 배지 자리에서 끝납니다(알림 영역에 바로 붙도록).
+            return (int)Math.Ceiling(Pad * s + rows * UnitWidth(s, height) + Math.Max(0, rows - 1) * UnitGap * s);
         }
 
         public static void Render(Graphics g, Size size, float s, Palette p, IList<ProviderState> rows, DateTime now, Settings cfg, bool hover, bool floating)
@@ -325,57 +419,8 @@ namespace Ongi
             if (hover) Draw.FillRounded(g, new RectangleF(1.5f * s, 3 * s, size.Width - 3 * s, size.Height - 6 * s), 5 * s, p.Hover);
 
             float icon = IconSize(s, size.Height), unit = UnitWidth(s, size.Height), cy = size.Height / 2f;
-            var font = Draw.Font("Segoe UI", 11.5f * s);
             for (int i = 0; i < rows.Count; i++)
-            {
-                var st = rows[i];
-                float x = (Pad + i * UnitGap) * s + i * unit;
-                Gauge.ForState(g, st, x + icon / 2, cy, icon, p, now);
-
-                string text;
-                Color color;
-                List<ChatCache> hot;
-                SideText(st, now, p, out text, out color, out hot);
-                float tx = x + icon + Gap * s;
-                if (hot == null || hot.Count < 2) Draw.Text(g, text, font, color, tx, cy, -1);
-                else
-                {
-                    // 채팅이 여럿이면 아래에 채팅마다 점 하나: 왼쪽부터 최근 순, 색 = 캐시 남은 비율(초록 → 모래 → 산호)
-                    Draw.Text(g, text, font, color, tx, cy - 6f * s, -1);
-                    for (int k = 0; k < hot.Count && k < MaxPips; k++)
-                    {
-                        double f = hot[k].Fraction(now);
-                        Draw.Dot(g, Palette.Fade(p.Heat(f), 0.6 + 0.4 * f), tx + (1.8f + k * 5.6f) * s, cy + 8.5f * s, 1.8f * s);
-                    }
-                }
-            }
-        }
-
-        const int MaxPips = 5;
-
-        // 옆 시간: 가장 최근에 쓴 채팅의 캐시가 식기까지 남은 시간입니다.
-        // 한도(5시간·주간)가 찼으면 캐시는 의미가 없으므로 한도 리셋까지 남은 시간을 빨간색으로 보여 줍니다.
-        static void SideText(ProviderState st, DateTime now, Palette p, out string text, out Color color, out List<ChatCache> hotList)
-        {
-            hotList = null;
-            var d = st.Data;
-            if (d != null)
-            {
-                UsageWindow full = null;
-                if (d.Weekly != null && d.Weekly.Effective(now) >= 100) full = d.Weekly;
-                else if (d.Session != null && d.Session.Effective(now) >= 100) full = d.Session;
-                if (full != null && full.ResetUtc.HasValue && full.ResetUtc.Value > now)
-                {
-                    text = Util.Compact(full.ResetUtc.Value - now);
-                    color = p.Crit;
-                    return;
-                }
-            }
-            var hot = ChatCache.HotList(st.Caches, now);
-            hotList = hot;
-            if (hot.Count == 0) { text = "—"; color = p.Faint; return; }
-            text = Util.Timer(hot[0].Remaining(now));
-            color = p.Heat(hot[0].Fraction(now));
+                Gauge.ForState(g, rows[i], Pad * s + i * (unit + UnitGap * s) + icon / 2, cy, icon, p, now);
         }
 
         // 1초마다 다시 그려야 하는지(10분 미만 캐시 타이머는 초 단위로 표시)
@@ -393,7 +438,7 @@ namespace Ongi
     {
         public const float Width = 344;
 
-        public static int Render(Graphics g, float s, int W, Palette p, IList<ProviderState> states, DateTime now, bool draw)
+        public static int Render(Graphics g, float s, int W, Palette basePalette, IList<ProviderState> states, DateTime now, bool draw)
         {
             Draw.Setup(g, true);
             float pad = 16 * s, y = 14 * s, col = pad + 54 * s;
@@ -407,6 +452,7 @@ namespace Ongi
             {
                 var st = states[i];
                 var d = st.Data;
+                var p = basePalette;
                 var brand = p.Brand(st.Key);
                 if (i > 0)
                 {
@@ -415,7 +461,7 @@ namespace Ongi
                 }
 
                 float top = y;
-                if (draw) Gauge.ForState(g, st, pad + 21 * s, top + 23 * s, 42 * s, p, now);
+                if (draw) Gauge.ForState(g, st, pad + 21 * s, top + 23 * s, 42 * s, p, now, false);
                 bool pace = d != null && d.Weekly != null;
                 // 링과 붙어 답답하지 않도록 링 아래에 여백을 두고 막대를 놓습니다.
                 if (draw && pace) PaceBar(g, s, pad, top + 64f * s, 42 * s, d.Weekly, p, brand, now);
@@ -434,7 +480,9 @@ namespace Ongi
                         Draw.Text(g, plan, chip, brand, cx + pw / 2, cy, 0);
                     }
                 }
-                if (draw) Draw.Text(g, Status(st, now), small, p.Faint, W - pad, cy, 1);
+                // 갱신 시각은 평소엔 부가 정보 색, 15분 넘게 새 값을 못 받았으면 노랑으로 바꿔 오래된 값임을 알립니다.
+                bool old = d != null && (now - d.UpdatedUtc).TotalMinutes > 15;
+                if (draw) Draw.Text(g, Status(st, now), small, old ? Palette.Fade(p.Warn, 0.9) : p.Meta, W - pad, cy, 1);
                 float ry = top + 24 * s;
 
                 if (d == null)
@@ -449,7 +497,12 @@ namespace Ongi
                     ry = Row(g, s, W, col, ry, "주간", d.Weekly, p, body, bold, small, now, draw);
                     foreach (var e in d.Extras)
                     {
-                        if (draw) Draw.Text(g, e.Name + " " + Util.Pct(e.Window.Effective(now)), small, p.Faint, col, ry + 10 * s);
+                        if (draw)
+                        {
+                            string name = e.Name + "  ";
+                            Draw.Text(g, name, small, p.Label, col, ry + 10 * s);
+                            Draw.Text(g, Util.Pct(e.Window.Effective(now)), small, p.Dim, col + Draw.Measure(g, name, small), ry + 10 * s);
+                        }
                         ry += 20 * s;
                     }
                 }
@@ -506,7 +559,7 @@ namespace Ongi
             var fb = Draw.Font("Segoe UI Semibold", 11f * s);
             float lw = Draw.Measure(g, "주간 ", f), ww = Draw.Measure(g, word, fb);
             float lx = x + w / 2 - (lw + ww) / 2, ly = barY + h + 12f * s;
-            Draw.Text(g, "주간 ", f, p.Faint, lx, ly);
+            Draw.Text(g, "주간 ", f, p.Label, lx, ly);
             Draw.Text(g, word, fb, wordColor, lx + lw, ly);
         }
 
@@ -517,13 +570,22 @@ namespace Ongi
             float pad = 16 * s, cy = y + 11 * s;
             if (draw)
             {
-                Draw.Text(g, label, body, p.Dim, col, cy);
+                Draw.Text(g, label, body, p.Label, col, cy);
                 if (w == null) Draw.Text(g, "—", bold, p.Faint, col + 82 * s, cy, 1);
                 else
                 {
                     double pct = w.Effective(now);
                     Draw.Text(g, Util.Pct(pct), bold, p.IsHot(pct) ? p.Level(pct, p.Text) : p.Text, col + 82 * s, cy, 1);
-                    Draw.Text(g, ResetText(w, now), small, p.Faint, W - pad, cy, 1);
+                    // 남은 시간(판단에 쓰는 값)은 시간 색, 리셋 시각(참고)은 부가 정보 색으로 나눕니다.
+                    string dur, clock;
+                    ResetParts(w, now, out dur, out clock);
+                    if (clock == null) Draw.Text(g, dur, small, p.Meta, W - pad, cy, 1);
+                    else
+                    {
+                        string tail = "  " + clock;
+                        Draw.Text(g, tail, small, p.Meta, W - pad, cy, 1);
+                        Draw.Text(g, dur, small, p.TimeInfo, W - pad - Draw.Measure(g, tail, small), cy, 1);
+                    }
                 }
             }
             return y + 22 * s;
@@ -543,13 +605,13 @@ namespace Ongi
             var row = Draw.Font("Segoe UI", 13f * s);
             if (draw)
             {
-                Draw.Text(g, "캐시", body, p.Dim, col, cy);
-                string right = hot.Count > 0 ? "TTL " + Util.Ttl(hot[0].TtlSec) + " · " + hot.Count + "개 살아 있음"
-                             : cold.Count > 0 ? "모두 식음" : "최근 1시간 요청 없음";
-                Draw.Text(g, right, small, p.Faint, W - pad, cy, 1);
+                Draw.Text(g, "캐시", body, p.Label, col, cy);
+                // 대화 목록이 아래에 바로 나오므로, 캐시가 살아 있으면 머리줄 오른쪽은 비워 둡니다.
+                string right = hot.Count > 0 ? null : cold.Count > 0 ? "모두 만료" : "최근 요청 없음";
+                if (right != null) Draw.Text(g, right, small, p.Meta, W - pad, cy, 1);
             }
             y += 22 * s;
-            // 살아 있는 채팅(최근 순) 다음에, 최근 1시간 안에 식은 채팅을 흐리게 보여 줍니다.
+            // 살아 있는 채팅(최근 순) 다음에, 최근 1시간 안에 만료된 채팅을 흐리게 보여 줍니다.
             var rows = hot.Concat(cold).ToList();
             for (int i = 0; i < rows.Count && i < MaxRows; i++)
             {
@@ -559,30 +621,41 @@ namespace Ongi
                 if (draw)
                 {
                     double f = c.Fraction(now);
-                    string right = alive ? Util.LongTimer(c.Remaining(now)) : "식음 · " + Util.Ago(c.ExpiresUtc, now);
+                    // 만료된 채팅은 캐시 크기를 붙입니다. 이어 쓰면 이만큼을 다시 처리하므로, 알림 기준 이상이면 크기를 노랑으로 칠합니다.
+                    string size = alive ? null : Util.Tokens(c.CachedTokens);
+                    string right = alive ? Util.LongTimer(c.Remaining(now)) : "만료  " + size;
                     float rw = Draw.Measure(g, right, row);
-                    // 점과 남은 시간의 색으로 캐시 남은 비율을 보여 줍니다(초록 → 모래 → 산호). 식은 채팅은 속이 빈 점입니다.
+                    // 점과 남은 시간의 색으로 캐시 남은 비율을 보여 줍니다(초록 → 모래 → 산호). 만료된 채팅은 속이 빈 점입니다.
                     Color heat = p.Heat(f);
                     if (alive) Draw.Dot(g, heat, col + 4 * s, cy, 3.5f * s);
                     else using (var pen = new Pen(p.Faint, 1.2f * s)) g.DrawEllipse(pen, col + 1.4f * s, cy - 2.6f * s, 5.2f * s, 5.2f * s);
-                    Draw.Text(g, right, row, alive ? heat : p.Faint, W - pad, cy, 1);
+                    if (alive) Draw.Text(g, right, row, heat, W - pad, cy, 1);
+                    else
+                    {
+                        Color sizeColor = c.CachedTokens >= p.BigCacheTokens ? Palette.Fade(p.Warn, 0.85) : p.Meta;
+                        Draw.Text(g, size, row, sizeColor, W - pad, cy, 1);
+                        Draw.Text(g, "만료  ", row, p.Faint, W - pad - Draw.Measure(g, size, row), cy, 1);
+                    }
                     Draw.Text(g, c.Title, row, !alive ? p.Faint : i == 0 ? p.Text : p.Dim, col + 13 * s, cy, -1, W - pad - rw - 10 * s - (col + 13 * s));
                 }
                 y += 21 * s;
             }
             if (rows.Count > MaxRows)
             {
-                if (draw) Draw.Text(g, "외 " + (rows.Count - MaxRows) + "개", small, p.Faint, col + 13 * s, y + 9 * s);
+                if (draw) Draw.Text(g, "외 " + (rows.Count - MaxRows) + "개", small, p.Meta, col + 13 * s, y + 9 * s);
                 y += 18 * s;
             }
             return y + 2 * s;
         }
 
-        static string ResetText(UsageWindow w, DateTime now)
+        // 리셋까지 남은 시간과 리셋 시각을 따로 돌려줍니다. 시각이 없는 상태 문구면 clock = null입니다.
+        static void ResetParts(UsageWindow w, DateTime now, out string duration, out string clock)
         {
-            if (!w.ResetUtc.HasValue) return w.Percent <= 0 ? "시작 전 · 쓰면 창이 열립니다" : "리셋 정보 없음";
-            if (w.ResetUtc.Value <= now) return "리셋됨 · 갱신 대기";
-            return Util.Long(w.ResetUtc.Value - now) + " · " + Util.Clock(w.ResetUtc.Value, now);
+            clock = null;
+            if (!w.ResetUtc.HasValue) { duration = w.Percent <= 0 ? "시작 전 · 쓰면 창이 열립니다" : "리셋 정보 없음"; return; }
+            if (w.ResetUtc.Value <= now) { duration = "리셋됨 · 갱신 대기"; return; }
+            duration = Util.Long(w.ResetUtc.Value - now);
+            clock = Util.Clock(w.ResetUtc.Value, now);
         }
 
         static string Status(ProviderState st, DateTime now)

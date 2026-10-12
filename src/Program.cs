@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyProduct("Ongi")]
 // 버전을 올릴 때는 아래 세 줄을 함께 바꿉니다. package.ps1은 InformationalVersion으로 zip 이름을 정합니다.
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.3.0")]
 
 namespace Ongi
 {
@@ -308,7 +308,7 @@ namespace Ongi
             Say("최근 65분 안에 요청한 채팅 " + all.Count + "개");
             foreach (var c in all)
                 Say("  " + (c.Key == "claude" ? "Claude" : "GPT   ") + " | " + c.Title + " | 마지막 요청 " + Util.Clock(c.LastUtc, now) +
-                    " | TTL " + Util.Ttl(c.TtlSec) + " | " + (c.Hot(now) ? "남음 " + Util.LongTimer(c.Remaining(now)) : "식음") +
+                    " | TTL " + Util.Ttl(c.TtlSec) + " | " + (c.Hot(now) ? "남음 " + Util.LongTimer(c.Remaining(now)) : "만료") +
                     " | 캐시 " + (c.CachedTokens / 1000) + "K 토큰");
             return 0;
         }

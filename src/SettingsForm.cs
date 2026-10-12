@@ -11,7 +11,7 @@ namespace Ongi
     sealed class UiTheme
     {
         public readonly bool Dark;
-        public readonly Color Bg, Field, FieldHover, Border, Text, Dim, Faint, Accent, AccentText, Selected, Track, Knob, Divider, Warn;
+        public readonly Color Bg, Field, FieldHover, Border, Text, Dim, Faint, Accent, AccentText, Selected, Track, Knob, Divider, Warn, Section;
 
         public UiTheme(bool dark)
         {
@@ -19,16 +19,16 @@ namespace Ongi
             if (dark)
             {
                 Bg = Color.FromArgb(32, 32, 34); Field = Color.FromArgb(45, 45, 48); FieldHover = Color.FromArgb(55, 55, 59);
-                Border = Color.FromArgb(68, 68, 72); Text = Color.FromArgb(238, 238, 240); Dim = Color.FromArgb(170, 170, 176);
-                Faint = Color.FromArgb(120, 120, 128); Accent = Color.FromArgb(108, 150, 212); AccentText = Color.FromArgb(16, 20, 28);
+                Border = Color.FromArgb(68, 68, 72); Text = Color.FromArgb(238, 238, 240); Dim = Color.FromArgb(180, 180, 186); Section = Color.FromArgb(206, 192, 172);
+                Faint = Color.FromArgb(140, 140, 148); Accent = Color.FromArgb(108, 150, 212); AccentText = Color.FromArgb(16, 20, 28);
                 Selected = Color.FromArgb(72, 72, 78); Track = Color.FromArgb(62, 62, 66); Knob = Color.FromArgb(196, 196, 200);
                 Divider = Color.FromArgb(48, 48, 52); Warn = Color.FromArgb(226, 178, 92);
             }
             else
             {
                 Bg = Color.FromArgb(249, 249, 250); Field = Color.White; FieldHover = Color.FromArgb(242, 242, 245);
-                Border = Color.FromArgb(212, 212, 218); Text = Color.FromArgb(26, 26, 30); Dim = Color.FromArgb(96, 96, 104);
-                Faint = Color.FromArgb(140, 140, 148); Accent = Color.FromArgb(56, 112, 190); AccentText = Color.White;
+                Border = Color.FromArgb(212, 212, 218); Text = Color.FromArgb(26, 26, 30); Dim = Color.FromArgb(90, 90, 98); Section = Color.FromArgb(112, 94, 72);
+                Faint = Color.FromArgb(126, 126, 134); Accent = Color.FromArgb(56, 112, 190); AccentText = Color.White;
                 Selected = Color.FromArgb(228, 228, 234); Track = Color.FromArgb(214, 214, 220); Knob = Color.FromArgb(92, 92, 100);
                 Divider = Color.FromArgb(228, 228, 232); Warn = Color.FromArgb(176, 116, 24);
             }
@@ -377,7 +377,7 @@ namespace Ongi
         readonly UiTheme t;
         readonly float s;
         readonly List<Action<Graphics>> paints = new List<Action<Graphics>>();
-        readonly Segmented mode, monitors, codexTtl;
+        readonly Segmented mode, monitors, codexTtl, iconSize;
         readonly List<KeyValuePair<string, Toggle>> monitorToggles = new List<KeyValuePair<string, Toggle>>(); // (Screen.DeviceName, 스위치)
         static readonly string[] MonitorModes = { "primary", "all", "custom" };
         readonly Toggle showClaude, showCodex, autostart, alerts;
@@ -412,6 +412,8 @@ namespace Ongi
             Section("표시", true);
             mode = new Segmented(t, s, new[] { "작업표시줄", "떠 있는 창" }, c.Mode == "floating" ? 1 : 0);
             Row("위치", null, mode, W);
+            iconSize = new Segmented(t, s, new[] { "작게", "보통", "크게" }, Math.Max(0, Array.IndexOf(Settings.IconSizes, c.IconSize)));
+            Row("아이콘 크기", null, iconSize, W);
             // 작업표시줄 모드에서 위젯을 붙일 모니터입니다. 모니터가 하나뿐이면 줄을 만들지 않습니다.
             monitors = new Segmented(t, s, new[] { "주 모니터", "모든 모니터", "직접 선택" }, Math.Max(0, Array.IndexOf(MonitorModes, c.Monitors)));
             var screens = Screen.AllScreens.OrderBy(sc => sc.Bounds.X).ThenBy(sc => sc.Bounds.Y).ToArray();
@@ -495,7 +497,7 @@ namespace Ongi
             Location = new Point(wa.Left + (wa.Width - Width) / 2, wa.Top + (wa.Height - Height) / 2);
 
             // 초기값을 다 넣은 뒤에 연결해야 창을 여는 것만으로 저장되지 않습니다.
-            var live = new List<UiControl> { mode, showClaude, showCodex, autostart, refresh, warn, crit, alerts, tokens, minutes, codexTtl };
+            var live = new List<UiControl> { mode, iconSize, showClaude, showCodex, autostart, refresh, warn, crit, alerts, tokens, minutes, codexTtl };
             if (monitorToggles.Count > 0) { live.Add(monitors); live.AddRange(monitorToggles.Select(m => (UiControl)m.Value)); }
             foreach (var ctl in live) ctl.Changed += (o, e) => ApplyNow();
         }
@@ -526,7 +528,7 @@ namespace Ongi
             }
             float cy = y + 14 * s;
             var f = Draw.Font("Segoe UI Semibold", 12.5f * s);
-            paints.Add(g => Draw.Text(g, title, f, t.Dim, 22 * s, cy));
+            paints.Add(g => Draw.Text(g, title, f, t.Section, 22 * s, cy));
             y += 28 * s;
         }
 
@@ -576,7 +578,9 @@ namespace Ongi
             var c = cfg;
             string oldMode = c.Mode, oldMonitors = c.Monitors + "|" + string.Join(",", c.MonitorList);
             bool oldClaude = c.ShowClaude, oldCodex = c.ShowCodex;
+            int oldIcon = c.IconSize;
             c.Mode = mode.Selected == 1 ? "floating" : "taskbar";
+            c.IconSize = Settings.IconSizes[iconSize.Selected];
             if (monitorToggles.Count > 0)
             {
                 c.Monitors = MonitorModes[monitors.Selected];
@@ -597,7 +601,7 @@ namespace Ongi
             c.Save();
             try { if (Autostart.IsEnabled() != autostart.Checked) Autostart.Set(autostart.Checked); }
             catch (Exception ex) { Log.Write("자동 실행 설정 실패: " + ex.Message); }
-            apply(oldMode != c.Mode || oldMonitors != c.Monitors + "|" + string.Join(",", c.MonitorList) || oldClaude != c.ShowClaude || oldCodex != c.ShowCodex);
+            apply(oldMode != c.Mode || oldIcon != c.IconSize || oldMonitors != c.Monitors + "|" + string.Join(",", c.MonitorList) || oldClaude != c.ShowClaude || oldCodex != c.ShowCodex);
         }
     }
 }

@@ -61,6 +61,7 @@ namespace Ongi
             Opt = opt;
             Cfg = Settings.Load(opt.Mock);
             if (opt.Floating) Cfg.Mode = "floating";
+            BarRenderer.IconLogical = Cfg.IconSize;
             States = new List<ProviderState>
             {
                 new ProviderState("claude", "Claude", "Claude", opt.Mock ? (IProvider)new MockProvider("claude") : new ClaudeProvider()),
@@ -454,7 +455,7 @@ namespace Ongi
                 case 1:
                     foreach (var st in VisibleStates) if (!st.Busy) st.NextFetchUtc = DateTime.UtcNow;
                     break;
-                case 4: Cfg.Offset = 6; Cfg.FloatX = Cfg.FloatY = null; Cfg.Save(); CreateBars(); break;
+                case 4: Cfg.Offset = 0; Cfg.FloatX = Cfg.FloatY = null; Cfg.Save(); CreateBars(); break;
                 case 8: OpenSettings(); break;
                 case 9: ExitApp(); break;
             }
@@ -609,6 +610,7 @@ namespace Ongi
         // 설정 창에서 저장하면 불립니다. 위치·모니터·표시 서비스가 바뀌었으면 위젯을 다시 만듭니다.
         public void ApplySettings(bool recreateBar)
         {
+            BarRenderer.IconLogical = Cfg.IconSize;
             if (recreateBar) CreateBars();
             foreach (var st in VisibleStates)
                 if (!st.Busy && st.RateLimitHits == 0)

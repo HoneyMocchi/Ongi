@@ -318,7 +318,7 @@ namespace Ongi
         public string Mode = "taskbar";      // taskbar | floating
         public string Monitors = "primary";  // 작업표시줄 모드에서 위젯을 붙일 모니터: primary | all | custom
         public List<string> MonitorList = new List<string>(); // custom일 때 고른 모니터(Screen.DeviceName, 예: \\.\DISPLAY2)
-        public int Offset = 6;               // 작업표시줄 모드: 알림 영역 왼쪽 끝에서 띄울 거리(논리 px)
+        public int Offset = 0;               // 작업표시줄 모드: 알림 영역 왼쪽 끝에서 띄울 거리(논리 px, 드래그로 바뀜)
         public int? FloatX, FloatY;          // 떠 있는 창 모드 위치(물리 px)
         public int RefreshSeconds = 90;
         public bool ShowClaude = true, ShowCodex = true;
@@ -327,6 +327,8 @@ namespace Ongi
         public bool CacheAlerts = true;      // 큰 캐시가 식기 전에 Windows 알림
         public int AlertTokens = 500000;     // 이 토큰 수 이상인 채팅만 알림
         public int AlertMinutes = 5;         // 식기 몇 분 전에 알릴지(TTL이 짧으면 TTL의 1/5)
+        public int IconSize = 34;            // 작업표시줄 아이콘 크기(논리 px): 30 | 34 | 38
+        public static readonly int[] IconSizes = { 30, 34, 38 };
         bool readOnly;
 
         static string FilePath { get { return Paths.File("settings.json"); } }
@@ -355,6 +357,8 @@ namespace Ongi
                 s.CacheAlerts = J.Bool(J.Get(o, "cacheAlerts")) ?? true;
                 s.AlertTokens = Math.Max(0, (int)(J.Num(J.Get(o, "alertTokens")) ?? s.AlertTokens));
                 s.AlertMinutes = Math.Max(1, (int)(J.Num(J.Get(o, "alertMinutes")) ?? s.AlertMinutes));
+                int icon = (int)(J.Num(J.Get(o, "iconSize")) ?? s.IconSize);
+                s.IconSize = Array.IndexOf(IconSizes, icon) >= 0 ? icon : 34;
                 if (!s.ShowClaude && !s.ShowCodex) s.ShowClaude = s.ShowCodex = true;
             }
             catch (Exception ex) { Log.Write("설정 읽기 실패: " + ex.Message); }
@@ -384,7 +388,7 @@ namespace Ongi
                     { "mode", Mode }, { "monitors", Monitors }, { "monitorList", MonitorList }, { "offset", Offset }, { "floatX", FloatX }, { "floatY", FloatY },
                     { "refreshSeconds", RefreshSeconds }, { "showClaude", ShowClaude }, { "showCodex", ShowCodex },
                     { "warnPercent", WarnPercent }, { "critPercent", CritPercent }, { "codexCacheMinutes", CodexCacheMinutes },
-                    { "cacheAlerts", CacheAlerts }, { "alertTokens", AlertTokens }, { "alertMinutes", AlertMinutes },
+                    { "cacheAlerts", CacheAlerts }, { "alertTokens", AlertTokens }, { "alertMinutes", AlertMinutes }, { "iconSize", IconSize },
                 };
                 Util.WriteAtomic(FilePath, J.Write(d));
             }
@@ -464,26 +468,33 @@ namespace Ongi
     sealed class Palette
     {
         public readonly bool Dark;
-        public readonly Color Text, Dim, Faint, Track, Hover, Warn, Crit, PanelBg, PanelBorder, Divider;
+        public readonly Color Text, Dim, Faint, Track, Hover, Warn, Crit, PanelBg, PanelBorder, Divider, BadgeText, Label, TimeInfo, Meta;
         readonly int warnAt, critAt;
+        public readonly long BigCacheTokens;   // 이 크기 이상 캐시는 "큰 캐시"(만료 알림 기준과 같음)
 
         public Palette(bool dark, Settings cfg)
         {
             Dark = dark;
             warnAt = cfg.WarnPercent; critAt = cfg.CritPercent;
+            BigCacheTokens = cfg.AlertTokens;
+            // 보조 글자는 역할별로 옅은 색을 나눠 줍니다: 항목 라벨(모래빛) · 시간 정보(청회색) · 부가 정보(중립 회색)
             if (dark)
             {
-                Text = Color.FromArgb(240, 255, 255, 255); Dim = Color.FromArgb(165, 255, 255, 255); Faint = Color.FromArgb(105, 255, 255, 255);
+                Text = Color.FromArgb(240, 255, 255, 255); Dim = Color.FromArgb(196, 196, 200); Faint = Color.FromArgb(146, 146, 152);
+                Label = Color.FromArgb(206, 192, 172); TimeInfo = Color.FromArgb(150, 177, 206); Meta = Color.FromArgb(140, 142, 150);
                 Track = Color.FromArgb(48, 255, 255, 255); Hover = Color.FromArgb(22, 255, 255, 255);
                 Warn = Color.FromArgb(255, 199, 66); Crit = Color.FromArgb(255, 102, 99);
                 PanelBg = Color.FromArgb(255, 36, 36, 38); PanelBorder = Color.FromArgb(60, 255, 255, 255); Divider = Color.FromArgb(26, 255, 255, 255);
+                BadgeText = Color.FromArgb(21, 21, 21);
             }
             else
             {
-                Text = Color.FromArgb(230, 0, 0, 0); Dim = Color.FromArgb(150, 0, 0, 0); Faint = Color.FromArgb(100, 0, 0, 0);
+                Text = Color.FromArgb(230, 0, 0, 0); Dim = Color.FromArgb(86, 86, 92); Faint = Color.FromArgb(124, 124, 130);
+                Label = Color.FromArgb(112, 94, 72); TimeInfo = Color.FromArgb(56, 90, 128); Meta = Color.FromArgb(120, 122, 130);
                 Track = Color.FromArgb(36, 0, 0, 0); Hover = Color.FromArgb(16, 0, 0, 0);
                 Warn = Color.FromArgb(196, 128, 0); Crit = Color.FromArgb(214, 52, 48);
                 PanelBg = Color.FromArgb(255, 249, 249, 249); PanelBorder = Color.FromArgb(40, 0, 0, 0); Divider = Color.FromArgb(22, 0, 0, 0);
+                BadgeText = Color.White;
             }
         }
 
@@ -500,6 +511,16 @@ namespace Ongi
             if (pct >= critAt) return Crit;
             if (pct >= warnAt) return Warn;
             return normal;
+        }
+
+        // 아이콘 안쪽 캐시 액체 색: Heat와 같은 색 흐름이지만 채도·명도를 낮추고 반투명으로 깔아 가운데 숫자 대비를 지킵니다.
+        public Color Liquid(double f)
+        {
+            Color fresh = Dark ? Color.FromArgb(104, 158, 136) : Color.FromArgb(118, 176, 150);
+            Color mid = Dark ? Color.FromArgb(170, 150, 104) : Color.FromArgb(204, 178, 120);
+            Color low = Dark ? Color.FromArgb(178, 112, 98) : Color.FromArgb(214, 146, 128);
+            Color c = f >= 0.5 ? Mix(mid, fresh, (f - 0.5) / 0.5) : f >= 0.15 ? Mix(low, mid, (f - 0.15) / 0.35) : low;
+            return Color.FromArgb(Dark ? 107 : 115, c);
         }
 
         // 캐시 남은 비율(1 → 0)에 따른 차분한 색: 세이지 초록 → 모래 → 산호. 쨍한 원색은 피합니다.
