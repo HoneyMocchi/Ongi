@@ -34,6 +34,7 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 
 - 버전은 `src\Program.cs`의 `AssemblyInformationalVersion`(표시용)과 `AssemblyFileVersion`에서 바꿉니다.
 - 배포 zip에는 `Ongi.exe`와 `README.md`만 들어갑니다.
+- `bin\Ongi.exe`는 git으로 받아서 바로 실행할 수 있게 리포에 커밋합니다(`bin\`의 다른 파일은 무시). 버전을 올릴 때는 `package.ps1`로 만든 exe를 소스와 같은 커밋에 넣고, 같은 exe를 zip으로 릴리스에 올립니다.
 
 ## 명령줄 옵션
 

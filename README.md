@@ -18,10 +18,18 @@ Claude와 GPT(Codex)의 **5시간·주간 사용량**과 채팅별 **프롬프�
 
 ## 설치와 제거
 
-1. zip을 풀어 원하는 폴더에 `Ongi.exe`를 둡니다. 예: `%LOCALAPPDATA%\Programs\Ongi`
-2. `Ongi.exe`를 실행하면 시계 왼쪽에 위젯이 붙습니다.
+받는 방법은 두 가지입니다. 빌드할 필요는 없습니다.
+
+- **zip으로 받기:** [최신 릴리스](https://github.com/HoneyMocchi/Ongi/releases/latest)에서 `Ongi-<버전>.zip`을 받아 원하는 폴더에 풉니다. 예: `%LOCALAPPDATA%\Programs\Ongi`
+- **git으로 받기:** 리포에 빌드된 `bin\Ongi.exe`가 들어 있습니다.
+  ```
+  git clone https://github.com/HoneyMocchi/Ongi
+  ```
+  업데이트할 때는 위젯 우클릭 → **종료** 후 `git pull`을 하고 다시 실행합니다. 실행 중에는 exe를 덮어쓸 수 없습니다.
+
+1. `Ongi.exe`를 실행하면 시계 왼쪽에 위젯이 붙습니다.
    - 서명되지 않은 프로그램이라 처음 실행할 때 SmartScreen 경고가 뜰 수 있습니다. 이때는 "추가 정보 → 실행"을 누릅니다.
-3. 부팅할 때 켜려면 위젯 우클릭 → 설정 → **Windows 시작 시 실행**을 켭니다.
+2. 부팅할 때 켜려면 위젯 우클릭 → 설정 → **Windows 시작 시 실행**을 켭니다.
 
 제거하려면 다음 순서로 진행합니다.
 1. 설정에서 **Windows 시작 시 실행**을 끕니다.
