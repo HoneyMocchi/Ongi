@@ -11,7 +11,7 @@ namespace Ongi
     sealed class UiTheme
     {
         public readonly bool Dark;
-        public readonly Color Bg, Field, FieldHover, Border, Text, Dim, Faint, Accent, AccentText, Selected, Track, Knob, Divider;
+        public readonly Color Bg, Field, FieldHover, Border, Text, Dim, Faint, Accent, AccentText, Selected, Track, Knob, Divider, Warn;
 
         public UiTheme(bool dark)
         {
@@ -22,7 +22,7 @@ namespace Ongi
                 Border = Color.FromArgb(68, 68, 72); Text = Color.FromArgb(238, 238, 240); Dim = Color.FromArgb(170, 170, 176);
                 Faint = Color.FromArgb(120, 120, 128); Accent = Color.FromArgb(108, 150, 212); AccentText = Color.FromArgb(16, 20, 28);
                 Selected = Color.FromArgb(72, 72, 78); Track = Color.FromArgb(62, 62, 66); Knob = Color.FromArgb(196, 196, 200);
-                Divider = Color.FromArgb(48, 48, 52);
+                Divider = Color.FromArgb(48, 48, 52); Warn = Color.FromArgb(226, 178, 92);
             }
             else
             {
@@ -30,7 +30,7 @@ namespace Ongi
                 Border = Color.FromArgb(212, 212, 218); Text = Color.FromArgb(26, 26, 30); Dim = Color.FromArgb(96, 96, 104);
                 Faint = Color.FromArgb(140, 140, 148); Accent = Color.FromArgb(56, 112, 190); AccentText = Color.White;
                 Selected = Color.FromArgb(228, 228, 234); Track = Color.FromArgb(214, 214, 220); Knob = Color.FromArgb(92, 92, 100);
-                Divider = Color.FromArgb(228, 228, 232);
+                Divider = Color.FromArgb(228, 228, 232); Warn = Color.FromArgb(176, 116, 24);
             }
         }
     }
@@ -268,6 +268,107 @@ namespace Ongi
         protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) OnClick(EventArgs.Empty); base.OnKeyDown(e); }
     }
 
+    // 설정 창 아래 줄 오른쪽의 버전 표시입니다. 새 버전이 있으면 그 자리가 업데이트 버튼이 됩니다.
+    sealed class UpdateBox : UiControl
+    {
+        enum State { Version, Available, Git, ReadOnly, Busy, Restarting, Failed }
+        readonly IUpdateHost host;
+        State state = State.Version;
+        ReleaseInfo release;
+        int percent;
+        string error;
+        readonly Font font, bold;
+
+        public UpdateBox(UiTheme t, float s, IUpdateHost host) : base(t, s)
+        {
+            this.host = host;
+            font = Draw.Font("Segoe UI", 12.5f * s);
+            bold = Draw.Font("Segoe UI Semibold", 13f * s);
+            Size = new Size((int)(250 * s), (int)(34 * s));
+            Cursor = Cursors.Default;
+            TabStop = false;
+        }
+
+        public void SetCheck(UpdateCheck c)
+        {
+            if (state == State.Busy || state == State.Restarting) return;
+            release = c.Latest;
+            state = !c.Newer ? State.Version
+                  : c.Block == UpdateBlock.GitClone ? State.Git
+                  : c.Block == UpdateBlock.ReadOnly ? State.ReadOnly : State.Available;
+            Cursor = state == State.Available ? Cursors.Hand : Cursors.Default;
+            TabStop = state == State.Available;
+            Invalidate();
+        }
+
+        protected override void OnClick(EventArgs e)
+        {
+            base.OnClick(e);
+            if ((state != State.Available && state != State.Failed) || release == null) return;
+            state = State.Busy;
+            percent = 0;
+            Cursor = Cursors.Default;
+            Invalidate();
+            host.StartUpdate(release,
+                p => { if (IsDisposed) return; percent = p; if (p >= 100) state = State.Restarting; Invalidate(); },
+                msg => { if (IsDisposed) return; error = msg; state = State.Failed; Cursor = Cursors.Hand; Invalidate(); });
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) OnClick(EventArgs.Empty); base.OnKeyDown(e); }
+
+        // 숫자를 읽는 소리에 맞춘 조사: 0(영)·3(삼)·6(육)은 받침이 있어 "으로", 나머지는 "로"(1 일·7 칠·8 팔은 ㄹ 받침)
+        static string Ro(string version)
+        {
+            char last = string.IsNullOrEmpty(version) ? '0' : version[version.Length - 1];
+            return last == '0' || last == '3' || last == '6' ? "으로" : "로";
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = Begin(e);
+            float right = Width - 1, cy = Height / 2f;
+            string next = release != null ? release.VersionText : "";
+            switch (state)
+            {
+                case State.Version:
+                    Draw.Text(g, "v" + host.CurrentVersion, font, T.Faint, right, cy, 1);
+                    break;
+                case State.Git:
+                    Draw.Text(g, "새 버전 " + next + " · git pull로 받기", font, T.Faint, right, cy, 1);
+                    break;
+                case State.ReadOnly:
+                    Draw.Text(g, "새 버전 " + next + " · 이 폴더에는 쓸 수 없음", font, T.Faint, right, cy, 1);
+                    break;
+                case State.Available:
+                case State.Busy:
+                case State.Restarting:
+                {
+                    string label = state == State.Available ? next + Ro(next) + " 업데이트"
+                                 : state == State.Busy ? "받는 중 " + percent + "%" : "다시 시작하는 중…";
+                    float w = Draw.Measure(g, next + Ro(next) + " 업데이트", bold) + 36 * S;
+                    var r = new RectangleF(right - w, 0.5f, w - 0.5f, Height - 1);
+                    if (state == State.Available)
+                        Draw.FillRounded(g, r, 7 * S, Hover ? Color.FromArgb(230, T.Accent) : T.Accent);
+                    else
+                    {
+                        // 받는 동안 버튼 자리가 진행 막대가 됩니다.
+                        Draw.FillRounded(g, r, 7 * S, T.Field);
+                        float fw = state == State.Restarting ? r.Width : Math.Max(14 * S, r.Width * percent / 100f);
+                        Draw.FillRounded(g, new RectangleF(r.X, r.Y, fw, r.Height), 7 * S, Color.FromArgb(90, T.Accent));
+                        Draw.StrokeRounded(g, r, 7 * S, T.Border, 1);
+                    }
+                    Draw.Text(g, label, bold, state == State.Available ? T.AccentText : T.Text, r.X + r.Width / 2, cy, 0);
+                    if (state == State.Available) FocusRing(g, r, 7 * S);
+                    break;
+                }
+                case State.Failed:
+                    Draw.Text(g, "업데이트 실패 · 다시 시도", font, Hover ? T.Text : T.Warn, right, cy - 7 * S, 1);
+                    Draw.Text(g, error ?? "", Draw.Font("Segoe UI", 11f * S), T.Faint, right, cy + 9 * S, 1, Width);
+                    break;
+            }
+        }
+    }
+
     // 설정 창: 저장 버튼 없이 항목을 바꾸는 즉시 저장·적용됩니다(디스코드 설정처럼).
     sealed class SettingsForm : Form
     {
@@ -285,7 +386,7 @@ namespace Ongi
         float y;
 
         // apply: 저장 후 호출됩니다. 인자는 위젯을 다시 만들어야 하는지(위치·모니터·표시 서비스 변경) 여부입니다.
-        public SettingsForm(Settings cfg, Action<bool> apply, float scale, bool? dark = null)
+        public SettingsForm(Settings cfg, Action<bool> apply, float scale, bool? dark = null, IUpdateHost updates = null)
         {
             this.cfg = cfg;
             this.apply = apply;
@@ -380,6 +481,13 @@ namespace Ongi
             logs.Location = new Point((int)(16 * s), (int)y);
             logs.Click += (o, e) => { try { Process.Start("explorer.exe", "\"" + Paths.Dir + "\""); } catch { } };
             Controls.Add(logs);
+            if (updates != null)
+            {
+                var box = new UpdateBox(t, s, updates);
+                box.Location = new Point(W - (int)(22 * s) - box.Width, (int)y);
+                Controls.Add(box);
+                updates.CheckUpdate(r => { if (!box.IsDisposed) box.SetCheck(r); });
+            }
             y += logs.Height + 12 * s;
 
             ClientSize = new Size(W, (int)Math.Ceiling(y));

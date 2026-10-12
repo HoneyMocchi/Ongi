@@ -13,16 +13,16 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyProduct("Ongi")]
 // 버전을 올릴 때는 아래 세 줄을 함께 바꿉니다. package.ps1은 InformationalVersion으로 zip 이름을 정합니다.
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.2.0")]
 
 namespace Ongi
 {
     sealed class Options
     {
-        public bool Mock, Probe, Exit, Floating, SelfTest, Caches, TestAlert;
-        public string Preview;
-        public int ExitAfter;
+        public bool Mock, Probe, Exit, Floating, SelfTest, Caches, TestAlert, OpenSettings, CheckUpdate;
+        public string Preview, TestUpdateZip;
+        public int ExitAfter, AfterUpdatePid;
 
         public static Options Parse(string[] args)
         {
@@ -40,6 +40,10 @@ namespace Ongi
                 else if (a == "--floating") o.Floating = true;
                 else if (a == "--preview" && next != null) { o.Preview = next; i++; }
                 else if (a == "--exit-after" && next != null) { int.TryParse(next, out o.ExitAfter); i++; }
+                else if (a == "--after-update" && next != null) { int.TryParse(next, out o.AfterUpdatePid); i++; }
+                else if (a == "--open-settings") o.OpenSettings = true;
+                else if (a == "--check-update") o.CheckUpdate = true;
+                else if (a == "--test-update" && next != null) { o.TestUpdateZip = next; i++; }
             }
             return o;
         }
@@ -49,10 +53,46 @@ namespace Ongi
     {
         public const string HostTitle = "Ongi.Host";
 
+        // 한 번에 하나만 실행되게 잡는 잠금입니다. 업데이트할 때는 새 버전이 뜰 수 있게 잠시 놓았다가, 실패하면 다시 잡습니다.
+        static Mutex instance;
+        static string mutexName;
+        static string[] launchArgs;
+
+        public static void ReleaseInstance()
+        {
+            if (instance == null) return;
+            try { instance.ReleaseMutex(); } catch { }
+            instance.Dispose();
+            instance = null;
+        }
+
+        public static void ReacquireInstance()
+        {
+            bool created;
+            var m = new Mutex(true, mutexName, out created);
+            if (!created) { try { m.WaitOne(5000); } catch (AbandonedMutexException) { } }
+            instance = m;
+        }
+
+        // 업데이트 후 새 버전을 같은 옵션으로 띄웁니다(업데이트용 옵션은 빼고).
+        public static string RestartArgs()
+        {
+            var keep = new List<string>();
+            for (int i = 0; i < launchArgs.Length; i++)
+            {
+                string a = launchArgs[i].ToLowerInvariant();
+                if (a == "--after-update" || a == "--test-update") { i++; continue; }
+                if (a == "--open-settings") continue;
+                keep.Add(launchArgs[i].Contains(" ") ? "\"" + launchArgs[i] + "\"" : launchArgs[i]);
+            }
+            return string.Join(" ", keep);
+        }
+
         [STAThread]
         static int Main(string[] args)
         {
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | (SecurityProtocolType)12288; // TLS 1.2 | 1.3
+            launchArgs = args;
             var opt = Options.Parse(args);
 
             if (opt.Preview != null)
@@ -64,6 +104,7 @@ namespace Ongi
             if (opt.Probe) { AttachConsoleOut(); return Diagnostics.Probe(); }
             if (opt.SelfTest) { AttachConsoleOut(); return Diagnostics.SelfTest(); }
             if (opt.Caches) { AttachConsoleOut(); return Diagnostics.Caches(); }
+            if (opt.CheckUpdate) { AttachConsoleOut(); return Diagnostics.CheckUpdate(); }
             if (opt.Exit)
             {
                 foreach (var title in new[] { HostTitle, HostTitle + ".Mock" })
@@ -75,15 +116,23 @@ namespace Ongi
             }
 
             bool created;
-            using (var mutex = new Mutex(true, opt.Mock ? @"Local\Ongi.Mock" : @"Local\Ongi.Singleton", out created))
+            mutexName = opt.Mock ? @"Local\Ongi.Mock" : @"Local\Ongi.Singleton";
+            instance = new Mutex(true, mutexName, out created);
+            // 업데이트로 띄워진 경우 이전 버전이 잠금을 막 놓는 중일 수 있어 잠시 기다립니다.
+            if (!created && opt.AfterUpdatePid > 0)
             {
-                if (!created)
-                {
-                    // 이미 실행 중이면 그쪽에 위젯을 다시 붙이고 새로고침하라고 알립니다.
-                    var h = Native.FindWindow(null, opt.Mock ? HostTitle + ".Mock" : HostTitle);
-                    if (h != IntPtr.Zero) Native.PostMessage(h, Native.WM_APP_SHOW, IntPtr.Zero, IntPtr.Zero);
-                    return 0;
-                }
+                try { created = instance.WaitOne(15000); } catch (AbandonedMutexException) { created = true; }
+            }
+            if (!created)
+            {
+                // 이미 실행 중이면 그쪽에 위젯을 다시 붙이고 새로고침하라고 알립니다.
+                instance.Dispose();
+                var h = Native.FindWindow(null, opt.Mock ? HostTitle + ".Mock" : HostTitle);
+                if (h != IntPtr.Zero) Native.PostMessage(h, Native.WM_APP_SHOW, IntPtr.Zero, IntPtr.Zero);
+                return 0;
+            }
+            try
+            {
                 if (!opt.Mock) Autostart.Repair();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
@@ -91,6 +140,7 @@ namespace Ongi
                 AppDomain.CurrentDomain.UnhandledException += (s, e) => Log.Write("처리되지 않은 예외: " + e.ExceptionObject);
                 Application.Run(new App(opt));
             }
+            finally { ReleaseInstance(); }
             return 0;
         }
 
@@ -228,6 +278,10 @@ namespace Ongi
                 check(applied == 0 + 2 && stepOk && modeOk, "설정 창: 바꾸는 즉시 적용(조회 주기 → 바로 반영, 위치 → 위젯 다시 만들기)");
             }
 
+            check(Updater.ParseVersion("v1.2.0") == new Version(1, 2, 0) && Updater.ParseVersion("1.2") == new Version(1, 2, 0) &&
+                  Updater.ParseVersion("v1.10.0") > Updater.ParseVersion("v1.9.3") && Updater.ParseVersion("최신") == null,
+                  "업데이트 버전 비교(v 접두, 두 자리, 1.10 > 1.9, 잘못된 태그)");
+
             Func<double, double, PaceState> pace = (pct, hoursLeft) =>
             {
                 double u, e;
@@ -257,6 +311,21 @@ namespace Ongi
                     " | TTL " + Util.Ttl(c.TtlSec) + " | " + (c.Hot(now) ? "남음 " + Util.LongTimer(c.Remaining(now)) : "식음") +
                     " | 캐시 " + (c.CachedTokens / 1000) + "K 토큰");
             return 0;
+        }
+
+        // GitHub 최신 릴리스와 이 위치에서 스스로 업데이트할 수 있는지 출력합니다.
+        public static int CheckUpdate()
+        {
+            try
+            {
+                var r = Updater.Latest();
+                Say("지금 " + Updater.Format(Updater.Current) + " · 최신 " + (r == null ? "없음" : r.VersionText));
+                if (r != null)
+                    Say("  zip: " + (r.ZipUrl ?? "없음") + "\n  sha256: " + (r.ShaUrl ?? "없음"));
+                Say("  이 위치: " + Updater.Block());
+                return 0;
+            }
+            catch (Exception ex) { Say("확인 실패 — " + ex.Message); return 1; }
         }
 
         static void Print(string name, Snapshot s)
@@ -333,13 +402,28 @@ namespace Ongi
             popDark.Dispose(); popAlert.Dispose(); popLight.Dispose(); popZoom.Dispose();
         }
 
+        // 미리보기용 업데이트 상태(네트워크 없이)
+        sealed class FakeUpdates : IUpdateHost
+        {
+            readonly bool newer;
+            public FakeUpdates(bool newer) { this.newer = newer; }
+            public string CurrentVersion { get { return Updater.Format(Updater.Current); } }
+            public void CheckUpdate(Action<UpdateCheck> done)
+            {
+                var v = new Version(Updater.Current.Major, Updater.Current.Minor + 1, 0);
+                done(new UpdateCheck { Newer = newer, Block = UpdateBlock.None, Latest = new ReleaseInfo { Version = v, VersionText = Updater.Format(v) } });
+            }
+            public void StartUpdate(ReleaseInfo release, Action<int> progress, Action<string> failed) { }
+        }
+
         // 설정 창을 화면에 띄우지 않고 비트맵으로 그립니다(다크·라이트 나란히).
         public static void SaveSettings(string path)
         {
             var shots = new List<Bitmap>();
             foreach (bool dark in new[] { true, false })
             {
-                using (var f = new SettingsForm(new Settings(), _ => { }, 1f, dark))
+                // 다크는 "새 버전 있음", 라이트는 "최신" 상태로 그려 업데이트 버튼 모양을 함께 봅니다.
+                using (var f = new SettingsForm(new Settings(), _ => { }, 1f, dark, new FakeUpdates(dark)))
                 {
                     var unused = f.Handle;
                     foreach (Control c in f.Controls) unused = c.Handle; // 숨은 창에서도 자식 컨트롤을 그리도록 핸들을 만듭니다.

@@ -72,7 +72,7 @@ if ($running.Count -gt 0) { Start-Sleep -Milliseconds 300 }
 
 # UI 자동화(보조 작업표시줄의 시계 위치 찾기)는 WPF 어셈블리라, 참조 어셈블리가 없을 때는 런타임 폴더의 WPF 하위 폴더에서 찾습니다.
 $refs = 'mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.Forms', 'System.Web.Extensions',
-        'WindowsBase', 'UIAutomationClient', 'UIAutomationTypes' |
+        'WindowsBase', 'UIAutomationClient', 'UIAutomationTypes', 'System.IO.Compression', 'System.IO.Compression.FileSystem' |
     ForEach-Object {
         $dll = Join-Path $ref "$_.dll"
         if (-not (Test-Path $dll)) { $dll = Join-Path $ref "WPF\$_.dll" }
@@ -80,7 +80,7 @@ $refs = 'mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.F
     }
 $sources = Get-ChildItem (Join-Path $root 'src') -Filter *.cs | ForEach-Object { $_.FullName }
 
-& $csc /nologo /noconfig /nostdlib+ /target:winexe /platform:anycpu /optimize+ /langversion:7.3 /codepage:65001 /warn:4 `
+& $csc /nologo /noconfig /nostdlib+ /target:winexe /platform:anycpu /optimize+ /langversion:7.3 /codepage:65001 /warn:4 /nowarn:1701 `
     "/out:$out" "/win32manifest:$(Join-Path $root 'app.manifest')" "/win32icon:$icon" @refs @sources
 if ($LASTEXITCODE -ne 0) { throw "빌드 실패 (exit $LASTEXITCODE)" }
 Write-Host "빌드 완료: $out"

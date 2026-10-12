@@ -13,6 +13,7 @@ Ongi\
 │  ├─ BarWindow.cs    작업표시줄 자식 레이어드 창(실패하면 떠 있는 창)
 │  ├─ DetailPopup.cs  상세 패널 창
 │  ├─ SettingsForm.cs 설정 창과 직접 그린 컨트롤(토글·분할 버튼·증감 버튼)
+│  ├─ Updater.cs      GitHub 릴리스 확인·받기·검증·exe 교체·되돌리기
 │  ├─ Core.cs         설정·캐시·로그·자동 실행·색 팔레트·공용 모델
 │  └─ Native.cs       Win32 호출
 ├─ assets\Ongi.ico    빌드할 때 없으면 생성
@@ -36,6 +37,34 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 - 배포 zip에는 `Ongi.exe`와 `README.md`만 들어갑니다.
 - `bin\Ongi.exe`는 git으로 받아서 바로 실행할 수 있게 리포에 커밋합니다(`bin\`의 다른 파일은 무시). 버전을 올릴 때는 `package.ps1`로 만든 exe를 소스와 같은 커밋에 넣고, 같은 exe를 zip으로 릴리스에 올립니다.
 
+### 릴리스 규칙(앱 안 업데이트가 의존함)
+
+- 태그: `vX.Y.Z`. 정식 릴리스여야 합니다. 초안·사전 릴리스는 `releases/latest`에 잡히지 않습니다.
+- 첨부: `Ongi-X.Y.Z.zip`과 `Ongi-X.Y.Z.zip.sha256` **두 파일**. 해시 파일이 없으면 앱이 받지 않습니다.
+- zip 안 `Ongi.exe`의 `ProductVersion`이 태그와 같아야 합니다(`package.ps1`로 만들면 맞습니다).
+
+## 앱 안 업데이트
+
+설정 창을 열 때 `GET api.github.com/repos/HoneyMocchi/Ongi/releases/latest`를 한 번 부릅니다. 비로그인 조회이고, 결과는 10분 동안 재사용합니다. 오른쪽 아래 상태는 다음 중 하나입니다.
+- `vX` (최신)
+- `X로 업데이트` 버튼
+- `git pull로 받기`: exe가 git 작업 사본 안에 있을 때
+- `이 폴더에는 쓸 수 없음`
+- 진행 막대
+- 실패와 다시 시도
+
+버튼을 누르면 다음 순서로 진행합니다.
+1. `%LOCALAPPDATA%\Ongi\update\`에 `.sha256`과 zip을 받아 해시를 비교합니다. `Ongi.exe`를 꺼내 버전을 확인합니다. 여기까지는 아무것도 바꾸지 않습니다.
+2. 실행 중인 `Ongi.exe`를 `Ongi.exe.old`로 이름만 바꾸고, 새 exe를 원래 이름으로 넣습니다.
+3. 위젯을 내리고 단일 실행 잠금(뮤텍스)을 놓은 뒤, 새 exe를 같은 옵션 + `--after-update <이전 PID>`(+ `--open-settings`)로 띄웁니다.
+4. 새 버전은 시작 2초 뒤 `Local\Ongi.UpdateReady` 이벤트를 켭니다. 이전 버전은 그걸 보고 종료합니다. 새 버전은 이전 프로세스가 끝나면 `.old`와 `update\`를 지웁니다.
+5. 20초 안에 신호가 없거나 새 버전이 바로 꺼지면 되돌립니다. 이전 버전이 새 프로세스를 끄고 `.old`를 원래 이름으로 되돌린 뒤, 잠금과 위젯을 다시 잡아 계속 실행합니다.
+
+시험(실제 GitHub 없이):
+- `Ongi.exe --mock --test-update <Ongi-X.Y.Z.zip>`: 같은 폴더의 `.sha256`으로 위 과정을 그대로 밟습니다.
+- 환경 변수 `ONGI_TEST_NO_READY=1`: 새 버전이 신호를 보내지 않아 되돌리기 경로를 시험합니다.
+- `--check-update`: 실제 최신 릴리스, 첨부 파일 주소, 이 위치의 교체 가능 여부를 출력합니다.
+
 ## 명령줄 옵션
 
 | 옵션 | 설명 |
@@ -50,6 +79,8 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 | `--preview <png>` | 샘플 데이터로 위젯·패널을 `<png>`에, 설정 창을 `<png>-settings.png`에 렌더 |
 | `--test-alert` | 샘플 캐시 만료 알림 표시(샘플 데이터 모드) |
 | `--exit-after <초>` | 테스트용 자동 종료 |
+| `--check-update` | GitHub 최신 릴리스와 이 위치의 업데이트 가능 여부 출력 |
+| `--test-update <zip>` | 로컬 zip으로 업데이트 과정 시험(`--mock`과 함께) |
 
 출력은 콘솔과 `%LOCALAPPDATA%\Ongi\ongi.log`에 남습니다.
 

@@ -27,3 +27,4 @@ Set-Content -Path "$zip.sha256" -Value "$hash  $name.zip" -Encoding Ascii
 
 Write-Host "패키지 완료: $zip"
 Write-Host "SHA-256: $hash"
+Write-Host "릴리스(태그 v$version)에는 $name.zip과 $name.zip.sha256 두 파일을 모두 첨부하세요. 앱 안 업데이트는 해시 파일이 있어야 받습니다."

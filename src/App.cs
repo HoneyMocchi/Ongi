@@ -37,7 +37,7 @@ namespace Ongi
         }
     }
 
-    sealed class App : ApplicationContext
+    sealed class App : ApplicationContext, IUpdateHost
     {
         public readonly Options Opt;
         public readonly Settings Cfg;
@@ -171,6 +171,7 @@ namespace Ongi
                 else foreach (var b in bars) b.Reposition();
             }
             if (tick == 3) foreach (var b in bars) if (b.IsAlive) b.LogPlacement();
+            if (tick == 2) OnStartedUp();
 
             foreach (var st in VisibleStates)
                 if (!st.Busy && now >= st.NextFetchUtc) StartFetch(st);
@@ -459,10 +460,147 @@ namespace Ongi
             }
         }
 
+        // ── 업데이트 ─────────────────────────────────────────────
+
+        UpdateCheck lastCheck;
+        DateTime lastCheckUtc;
+        bool updating;
+        EventWaitHandle readyEvent;
+        Process updateChild;
+        DateTime updateDeadline;
+        Action<string> updateFailed;
+        System.Windows.Forms.Timer updateTimer;
+
+        public string CurrentVersion { get { return Updater.Format(Updater.Current); } }
+
+        // 설정 창을 열 때만 GitHub에 물어봅니다. 10분 안에 다시 열면 지난 결과를 씁니다.
+        public void CheckUpdate(Action<UpdateCheck> done)
+        {
+            if (lastCheck != null && (DateTime.UtcNow - lastCheckUtc).TotalMinutes < 10) { done(lastCheck); return; }
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                var result = new UpdateCheck { Block = Updater.Block() };
+                try
+                {
+                    result.Latest = Updater.Latest();
+                    result.Newer = result.Latest != null && result.Latest.Version > Updater.Current;
+                }
+                catch (Exception ex) { Log.Write("업데이트 확인 실패: " + ex.Message); }
+                try
+                {
+                    host.BeginInvoke((Action)(() =>
+                    {
+                        if (result.Latest != null) { lastCheck = result; lastCheckUtc = DateTime.UtcNow; }
+                        done(result);
+                    }));
+                }
+                catch { }
+            });
+        }
+
+        public void StartUpdate(ReleaseInfo release, Action<int> progress, Action<string> failed)
+        {
+            if (updating) return;
+            updating = true;
+            updateFailed = failed;
+            Log.Write("업데이트 시작: " + CurrentVersion + " → " + release.VersionText);
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                string exe = null, error = null;
+                try { exe = Updater.Download(release, p => { try { host.BeginInvoke(progress, p); } catch { } }); }
+                catch (Exception ex) { error = ex.Message; }
+                try { host.BeginInvoke((Action)(() => { if (error != null) FailUpdate(error, false); else SwapAndRestart(exe); })); } catch { }
+            });
+        }
+
+        // 받은 exe로 바꾸고 새 버전을 띄운 뒤, 새 버전이 "정상 시작" 신호를 보낼 때까지 기다립니다.
+        void SwapAndRestart(string newExe)
+        {
+            try { Updater.Swap(newExe); }
+            catch (Exception ex) { FailUpdate("exe를 바꾸지 못했습니다: " + ex.Message, false); return; }
+
+            readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, Updater.ReadyEventName);
+            readyEvent.Reset();
+            DestroyBars();
+            Program.ReleaseInstance();
+            string args = Program.RestartArgs() + " --after-update " + Process.GetCurrentProcess().Id
+                        + (settings != null && !settings.IsDisposed ? " --open-settings" : "");
+            try
+            {
+                updateChild = Process.Start(new ProcessStartInfo(Application.ExecutablePath, args.Trim())
+                {
+                    UseShellExecute = false,
+                    WorkingDirectory = System.IO.Path.GetDirectoryName(Application.ExecutablePath),
+                });
+            }
+            catch (Exception ex) { FailUpdate("새 버전을 실행하지 못했습니다: " + ex.Message, true); return; }
+
+            updateDeadline = DateTime.UtcNow.AddSeconds(20);
+            updateTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            updateTimer.Tick += (o, e) =>
+            {
+                if (readyEvent.WaitOne(0))
+                {
+                    updateTimer.Stop();
+                    Log.Write("업데이트 완료: 새 버전이 정상으로 시작했습니다");
+                    ExitApp();
+                }
+                else if (updateChild.HasExited || DateTime.UtcNow > updateDeadline)
+                {
+                    updateTimer.Stop();
+                    FailUpdate(updateChild.HasExited ? "새 버전이 바로 종료되었습니다" : "새 버전이 제때 시작하지 않았습니다", true);
+                }
+            };
+            updateTimer.Start();
+        }
+
+        // 실패하면 이전 exe로 되돌리고, 잠금과 위젯을 다시 잡아 쓰던 상태 그대로 계속 실행합니다.
+        void FailUpdate(string reason, bool swapped)
+        {
+            if (swapped)
+            {
+                try { if (updateChild != null && !updateChild.HasExited) { updateChild.Kill(); updateChild.WaitForExit(5000); } } catch { }
+                Updater.Restore();
+                Program.ReacquireInstance();
+                CreateBars();
+                reason += " — 이전 버전으로 되돌렸습니다";
+            }
+            if (readyEvent != null) { readyEvent.Dispose(); readyEvent = null; }
+            updating = false;
+            Log.Write("업데이트 실패: " + reason);
+            if (updateFailed != null) updateFailed(reason);
+        }
+
+        // 시작하고 2초 뒤(메시지 루프가 도는 것을 확인한 뒤) 불립니다.
+        void OnStartedUp()
+        {
+            if (Opt.AfterUpdatePid > 0)
+            {
+                // 테스트용: ONGI_TEST_NO_READY가 있으면 신호를 보내지 않아 되돌리기 경로를 시험합니다.
+                if (Environment.GetEnvironmentVariable("ONGI_TEST_NO_READY") == null)
+                {
+                    try { using (var ev = EventWaitHandle.OpenExisting(Updater.ReadyEventName)) ev.Set(); } catch { }
+                    Log.Write("업데이트 후 시작: " + CurrentVersion);
+                    int pid = Opt.AfterUpdatePid;
+                    ThreadPool.QueueUserWorkItem(_ => Updater.CleanupAfter(pid));
+                }
+                if (Opt.OpenSettings) OpenSettings();
+            }
+            if (Opt.TestUpdateZip != null)
+            {
+                // 테스트용: 로컬 zip을 릴리스로 보고 실제 업데이트 과정을 그대로 밟습니다.
+                string zip = System.IO.Path.GetFullPath(Opt.TestUpdateZip);
+                var v = Updater.ParseVersion(System.IO.Path.GetFileNameWithoutExtension(zip).Replace("Ongi-", ""));
+                var r = new ReleaseInfo { Version = v, VersionText = Updater.Format(v), ZipName = System.IO.Path.GetFileName(zip),
+                                          ZipUrl = new Uri(zip).AbsoluteUri, ShaUrl = System.IO.File.Exists(zip + ".sha256") ? new Uri(zip + ".sha256").AbsoluteUri : null };
+                StartUpdate(r, p => { }, msg => Log.Write("테스트 업데이트 결과: " + msg));
+            }
+        }
+
         public void OpenSettings()
         {
             if (settings != null && !settings.IsDisposed) { settings.Activate(); return; }
-            settings = new SettingsForm(Cfg, ApplySettings, bars.Count > 0 ? bars[0].Scale : 1f);
+            settings = new SettingsForm(Cfg, ApplySettings, bars.Count > 0 ? bars[0].Scale : 1f, null, this);
             settings.FormClosed += (o, e) => settings = null;
             settings.Show();
             settings.Activate();
