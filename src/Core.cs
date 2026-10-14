@@ -316,9 +316,9 @@ namespace Ongi
     sealed class Settings
     {
         public string Mode = "taskbar";      // taskbar | floating
-        public string Monitors = "primary";  // 작업표시줄 모드에서 위젯을 붙일 모니터: primary | all | custom
-        public List<string> MonitorList = new List<string>(); // custom일 때 고른 모니터(Screen.DeviceName, 예: \\.\DISPLAY2)
-        public int Offset = 0;               // 작업표시줄 모드: 알림 영역 왼쪽 끝에서 띄울 거리(논리 px, 드래그로 바뀜)
+        public List<string> MonitorList = new List<string>(); // 작업표시줄 모드에서 위젯을 붙일 모니터(Screen.DeviceName, 예: \\.\DISPLAY2). 비면 주 모니터
+        public int Offset = 0;               // 작업표시줄 모드: 알림 영역 왼쪽 끝에서 띄울 거리(논리 px). Offsets에 없는 모니터가 씁니다
+        public Dictionary<string, int> Offsets = new Dictionary<string, int>(); // 모니터별로 드래그해 둔 거리(Screen.DeviceName → 논리 px)
         public int? FloatX, FloatY;          // 떠 있는 창 모드 위치(물리 px)
         public int RefreshSeconds = 90;
         public bool ShowClaude = true, ShowCodex = true;
@@ -341,11 +341,15 @@ namespace Ongi
                 if (!System.IO.File.Exists(FilePath)) return s;
                 var o = J.Parse(System.IO.File.ReadAllText(FilePath));
                 s.Mode = J.Str(J.Get(o, "mode")) == "floating" ? "floating" : "taskbar";
-                string mon = J.Str(J.Get(o, "monitors"));
-                s.Monitors = mon == "all" || mon == "custom" ? mon : "primary";
                 var list = J.Get(o, "monitorList") as object[];
                 if (list != null) foreach (var m in list) { var n = m as string; if (!string.IsNullOrEmpty(n)) s.MonitorList.Add(n); }
+                // 1.3 이하의 "monitors"(주 모니터 | 모든 모니터 | 직접 선택)를 모니터 목록으로 옮깁니다.
+                string mon = J.Str(J.Get(o, "monitors"));
+                if (mon == "primary") s.MonitorList.Clear();
+                else if (mon == "all") foreach (var sc in System.Windows.Forms.Screen.AllScreens) if (!s.MonitorList.Contains(sc.DeviceName)) s.MonitorList.Add(sc.DeviceName);
                 s.Offset = (int)(J.Num(J.Get(o, "offset")) ?? s.Offset);
+                var offsets = J.Get(o, "offsets") as Dictionary<string, object>;
+                if (offsets != null) foreach (var kv in offsets) { var v = J.Num(kv.Value); if (v.HasValue) s.Offsets[kv.Key] = Math.Max(0, (int)v.Value); }
                 var fx = J.Num(J.Get(o, "floatX")); var fy = J.Num(J.Get(o, "floatY"));
                 if (fx.HasValue && fy.HasValue) { s.FloatX = (int)fx.Value; s.FloatY = (int)fy.Value; }
                 s.RefreshSeconds = Math.Max(30, (int)(J.Num(J.Get(o, "refreshSeconds")) ?? s.RefreshSeconds));
@@ -368,14 +372,15 @@ namespace Ongi
         // 위젯을 붙일 모니터인지 봅니다. 고른 모니터가 하나도 연결되어 있지 않으면 주 모니터에 붙입니다.
         public bool WantsMonitor(System.Windows.Forms.Screen sc)
         {
-            if (Monitors == "all") return true;
-            if (Monitors == "custom")
-            {
-                bool any = false;
-                foreach (var a in System.Windows.Forms.Screen.AllScreens) if (MonitorList.Contains(a.DeviceName)) any = true;
-                if (any) return MonitorList.Contains(sc.DeviceName);
-            }
+            foreach (var a in System.Windows.Forms.Screen.AllScreens)
+                if (MonitorList.Contains(a.DeviceName)) return MonitorList.Contains(sc.DeviceName);
             return sc.Primary;
+        }
+
+        public int OffsetFor(string monitor)
+        {
+            int v;
+            return monitor != null && Offsets.TryGetValue(monitor, out v) ? v : Offset;
         }
 
         public void Save()
@@ -385,7 +390,7 @@ namespace Ongi
             {
                 var d = new Dictionary<string, object>
                 {
-                    { "mode", Mode }, { "monitors", Monitors }, { "monitorList", MonitorList }, { "offset", Offset }, { "floatX", FloatX }, { "floatY", FloatY },
+                    { "mode", Mode }, { "monitorList", MonitorList }, { "offset", Offset }, { "offsets", Offsets }, { "floatX", FloatX }, { "floatY", FloatY },
                     { "refreshSeconds", RefreshSeconds }, { "showClaude", ShowClaude }, { "showCodex", ShowCodex },
                     { "warnPercent", WarnPercent }, { "critPercent", CritPercent }, { "codexCacheMinutes", CodexCacheMinutes },
                     { "cacheAlerts", CacheAlerts }, { "alertTokens", AlertTokens }, { "alertMinutes", AlertMinutes }, { "iconSize", IconSize },

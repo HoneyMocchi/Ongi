@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyProduct("Ongi")]
 // 버전을 올릴 때는 아래 세 줄을 함께 바꿉니다. package.ps1은 InformationalVersion으로 zip 이름을 정합니다.
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.1")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.4.0")]
 
 namespace Ongi
 {
@@ -322,7 +322,7 @@ namespace Ongi
                 Say("지금 " + Updater.Format(Updater.Current) + " · 최신 " + (r == null ? "없음" : r.VersionText));
                 if (r != null)
                     Say("  zip: " + (r.ZipUrl ?? "없음") + "\n  sha256: " + (r.ShaUrl ?? "없음"));
-                Say("  이 위치: " + Updater.Block());
+                Say("  이 위치: " + Updater.Route() + (Updater.Route() == UpdateRoute.Git ? " (" + Git.Exe + ")" : ""));
                 return 0;
             }
             catch (Exception ex) { Say("확인 실패 — " + ex.Message); return 1; }
@@ -411,7 +411,7 @@ namespace Ongi
             public void CheckUpdate(Action<UpdateCheck> done)
             {
                 var v = new Version(Updater.Current.Major, Updater.Current.Minor + 1, 0);
-                done(new UpdateCheck { Newer = newer, Block = UpdateBlock.None, Latest = new ReleaseInfo { Version = v, VersionText = Updater.Format(v) } });
+                done(new UpdateCheck { Newer = newer, Route = UpdateRoute.Release, Latest = new ReleaseInfo { Version = v, VersionText = Updater.Format(v) } });
             }
             public void StartUpdate(ReleaseInfo release, Action<int> progress, Action<string> failed) { }
         }

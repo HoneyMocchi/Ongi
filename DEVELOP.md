@@ -39,6 +39,7 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 
 ### 릴리스 규칙(앱 안 업데이트가 의존함)
 
+- 태그 커밋이 먼저 `main`에 올라가 있어야 합니다. git으로 받은 사본은 릴리스로 새 버전을 알아챈 뒤 `main`을 받습니다.
 - 태그: `vX.Y.Z`. 정식 릴리스여야 합니다. 초안·사전 릴리스는 `releases/latest`에 잡히지 않습니다.
 - 첨부: `Ongi-X.Y.Z.zip`과 `Ongi-X.Y.Z.zip.sha256` **두 파일**. 해시 파일이 없으면 앱이 받지 않습니다.
 - zip 안 `Ongi.exe`의 `ProductVersion`이 태그와 같아야 합니다(`package.ps1`로 만들면 맞습니다).
@@ -48,7 +49,6 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 설정 창을 열 때 `GET api.github.com/repos/HoneyMocchi/Ongi/releases/latest`를 한 번 부릅니다. 비로그인 조회이고, 결과는 10분 동안 재사용합니다. 오른쪽 아래 상태는 다음 중 하나입니다.
 - `vX` (최신)
 - `X로 업데이트` 버튼
-- `git pull로 받기`: exe가 git 작업 사본 안에 있을 때
 - `이 폴더에는 쓸 수 없음`
 - 진행 막대
 - 실패와 다시 시도
@@ -60,8 +60,16 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 4. 새 버전은 시작 2초 뒤 `Local\Ongi.UpdateReady` 이벤트를 켭니다. 이전 버전은 그걸 보고 종료합니다. 새 버전은 이전 프로세스가 끝나면 `.old`와 `update\`를 지웁니다.
 5. 20초 안에 신호가 없거나 새 버전이 바로 꺼지면 되돌립니다. 이전 버전이 새 프로세스를 끄고 `.old`를 원래 이름으로 되돌린 뒤, 잠금과 위젯을 다시 잡아 계속 실행합니다.
 
+git 작업 사본(exe가 그 리포에 커밋된 파일이고 git을 찾은 경우)은 1~2단계만 다릅니다.
+- git은 PATH → `Program Files\Git` → `%LOCALAPPDATA%\Programs\Git` → GitHub Desktop 내장 순서로 찾습니다. 프롬프트는 모두 끕니다(`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`).
+- `git fetch` → 실행 중인 exe를 `.old`로 비킴 → `git merge --ff-only @{u}`. 실행 중인 exe는 git이 지울 수 없지만, 비워 둔 자리에는 새 exe를 씁니다. exe만 바뀐 상태여도 비켜 두므로 받을 수 있습니다.
+- 받은 exe의 버전이 지금보다 높아야 합니다. 같은 경로를 바로 읽으면 Windows가 실행 중인 exe의 버전 정보를 돌려주므로 `update\`에 복사해서 읽습니다.
+- 실패하면 새 exe를 지우고 `git reset --keep <받기 전 커밋>` 후 `.old`를 되돌립니다.
+- 다른 리포 안에 zip을 풀었거나 git이 없으면 릴리스 zip으로 받습니다.
+
 시험(실제 GitHub 없이):
 - `Ongi.exe --mock --test-update <Ongi-X.Y.Z.zip>`: 같은 폴더의 `.sha256`으로 위 과정을 그대로 밟습니다.
+- `Ongi.exe --mock --test-update git`: git 작업 사본에서 git 경로를 그대로 밟습니다(추적 브랜치에 버전이 더 높은 `bin\Ongi.exe` 커밋이 있어야 함).
 - 환경 변수 `ONGI_TEST_NO_READY=1`: 새 버전이 신호를 보내지 않아 되돌리기 경로를 시험합니다.
 - `--check-update`: 실제 최신 릴리스, 첨부 파일 주소, 이 위치의 교체 가능 여부를 출력합니다.
 
@@ -80,7 +88,7 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 | `--test-alert` | 샘플 캐시 만료 알림 표시(샘플 데이터 모드) |
 | `--exit-after <초>` | 테스트용 자동 종료 |
 | `--check-update` | GitHub 최신 릴리스와 이 위치의 업데이트 가능 여부 출력 |
-| `--test-update <zip>` | 로컬 zip으로 업데이트 과정 시험(`--mock`과 함께) |
+| `--test-update <zip>` | 로컬 zip으로 업데이트 과정 시험(`--mock`과 함께). `git`을 주면 git 경로 시험 |
 
 출력은 콘솔과 `%LOCALAPPDATA%\Ongi\ongi.log`에 남습니다.
 
@@ -107,9 +115,9 @@ powershell -ExecutionPolicy Bypass -File package.ps1   # dist\Ongi-<버전>.zip,
 ## 화면 구조
 
 - **작업표시줄 위젯:** `Shell_TrayWnd`의 자식(`WS_CHILD | WS_EX_LAYERED`)으로 `TrayNotifyWnd` 왼쪽에 둡니다.
-  - 설정의 `monitors`(`primary` | `all` | `custom` + `monitorList`의 `Screen.DeviceName`)에 따라 보조 작업표시줄(`Shell_SecondaryTrayWnd`)마다 하나씩 더 만듭니다. 고른 모니터가 하나도 연결되어 있지 않으면 주 모니터에 붙입니다.
+  - 설정의 `monitorList`(`Screen.DeviceName` 목록, 비면 주 모니터)에 따라 보조 작업표시줄(`Shell_SecondaryTrayWnd`)마다 하나씩 더 만듭니다. 고른 모니터가 하나도 연결되어 있지 않으면 주 모니터에 붙입니다.
   - 보조 작업표시줄에는 `TrayNotifyWnd`가 없고 시계가 XAML 안에 그려지므로, UI 자동화로 `AutomationId=SystemTrayIcon`의 위치를 백그라운드에서 30초마다 찾습니다. 못 찾으면 오른쪽 끝에서 90px 띄웁니다.
-  - 2초마다 대상 작업표시줄 목록을 다시 확인해 모니터 연결·해제를 감지하면 위젯을 다시 만듭니다. 간격(`offset`)은 모든 위젯이 같이 씁니다.
+  - 2초마다 대상 작업표시줄 목록을 다시 확인해 모니터 연결·해제를 감지하면 위젯을 다시 만듭니다. 드래그한 간격은 모니터마다 `offsets`(`Screen.DeviceName` → 논리 px)에 따로 저장하고, 없는 모니터는 `offset`을 씁니다. 1.3 이하의 `monitors` 값은 읽을 때 `monitorList`로 옮깁니다.
   - 로그인 정보가 없다는 오류(`FetchException.SignedOut`)를 받은 서비스는 작업표시줄에서 빼고 상세 패널에만 원인을 보여 줍니다. 둘 다 없으면 둘 다 그립니다. 알파 1 배경으로 마우스를 받고, `UpdateLayeredWindow`로 픽셀 단위 알파를 그립니다. 2초마다 위치·Z 순서를 확인하고, `TaskbarCreated`를 받으면 다시 붙습니다.
 - **상세 패널:** 활성화하지 않는 최상위 창입니다. 바깥을 클릭하면 닫히는데, 클릭은 `GetAsyncKeyState` 폴링으로 감지합니다.
 - **설정 창:** 저장 버튼 없이 컨트롤의 `Changed`마다 `settings.json`을 저장하고 위젯에 적용합니다.

@@ -380,11 +380,11 @@ namespace Ongi
 
         public void OnPopupHidden() { lastPopupHide = DateTime.UtcNow; }
 
-        // 드래그로 옮긴 간격(Offset)은 모든 작업표시줄 위젯이 같이 씁니다.
-        public void OnBarDragged()
+        // 드래그로 옮긴 간격은 모니터마다 따로 저장합니다(다른 모니터의 위젯은 그대로).
+        public void OnBarDragged(BarWindow bar)
         {
             Cfg.Save();
-            foreach (var b in bars) b.Reposition();
+            bar.Reposition();
         }
 
         public void OnBarLost()
@@ -455,7 +455,7 @@ namespace Ongi
                 case 1:
                     foreach (var st in VisibleStates) if (!st.Busy) st.NextFetchUtc = DateTime.UtcNow;
                     break;
-                case 4: Cfg.Offset = 0; Cfg.FloatX = Cfg.FloatY = null; Cfg.Save(); CreateBars(); break;
+                case 4: Cfg.Offset = 0; Cfg.Offsets.Clear(); Cfg.FloatX = Cfg.FloatY = null; Cfg.Save(); CreateBars(); break;
                 case 8: OpenSettings(); break;
                 case 9: ExitApp(); break;
             }
@@ -470,6 +470,7 @@ namespace Ongi
         Process updateChild;
         DateTime updateDeadline;
         Action<string> updateFailed;
+        string gitHead;                      // git으로 받았을 때 받기 전 커밋(되돌리기용)
         System.Windows.Forms.Timer updateTimer;
 
         public string CurrentVersion { get { return Updater.Format(Updater.Current); } }
@@ -480,7 +481,7 @@ namespace Ongi
             if (lastCheck != null && (DateTime.UtcNow - lastCheckUtc).TotalMinutes < 10) { done(lastCheck); return; }
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                var result = new UpdateCheck { Block = Updater.Block() };
+                var result = new UpdateCheck { Route = Updater.Route() };
                 try
                 {
                     result.Latest = Updater.Latest();
@@ -507,19 +508,36 @@ namespace Ongi
             Log.Write("업데이트 시작: " + CurrentVersion + " → " + release.VersionText);
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                string exe = null, error = null;
-                try { exe = Updater.Download(release, p => { try { host.BeginInvoke(progress, p); } catch { } }); }
+                string exe = null, head = null, error = null;
+                Action<int> report = p => { try { host.BeginInvoke(progress, p); } catch { } };
+                // git 작업 사본은 받기와 교체를 git이 한 번에 하므로, 여기서 끝나면 exe가 이미 바뀌어 있습니다.
+                bool git = Opt.TestUpdateZip == "git" || (Opt.TestUpdateZip == null && Updater.Route() == UpdateRoute.Git);
+                try { if (git) head = Updater.GitUpdate(report); else exe = Updater.Download(release, report); }
                 catch (Exception ex) { error = ex.Message; }
-                try { host.BeginInvoke((Action)(() => { if (error != null) FailUpdate(error, false); else SwapAndRestart(exe); })); } catch { }
+                try
+                {
+                    host.BeginInvoke((Action)(() =>
+                    {
+                        if (error != null) FailUpdate(error, false);
+                        else if (git) { gitHead = head; Restart(); }
+                        else SwapAndRestart(exe);
+                    }));
+                }
+                catch { }
             });
         }
 
-        // 받은 exe로 바꾸고 새 버전을 띄운 뒤, 새 버전이 "정상 시작" 신호를 보낼 때까지 기다립니다.
+        // 받은 exe로 바꿉니다.
         void SwapAndRestart(string newExe)
         {
             try { Updater.Swap(newExe); }
             catch (Exception ex) { FailUpdate("exe를 바꾸지 못했습니다: " + ex.Message, false); return; }
+            Restart();
+        }
 
+        // 바뀐 exe로 새 버전을 띄운 뒤, 새 버전이 "정상 시작" 신호를 보낼 때까지 기다립니다.
+        void Restart()
+        {
             readyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, Updater.ReadyEventName);
             readyEvent.Reset();
             DestroyBars();
@@ -561,7 +579,9 @@ namespace Ongi
             if (swapped)
             {
                 try { if (updateChild != null && !updateChild.HasExited) { updateChild.Kill(); updateChild.WaitForExit(5000); } } catch { }
-                Updater.Restore();
+                if (gitHead != null) Updater.GitRollback(gitHead);
+                else Updater.Restore();
+                gitHead = null;
                 Program.ReacquireInstance();
                 CreateBars();
                 reason += " — 이전 버전으로 되돌렸습니다";
@@ -587,7 +607,9 @@ namespace Ongi
                 }
                 if (Opt.OpenSettings) OpenSettings();
             }
-            if (Opt.TestUpdateZip != null)
+            if (Opt.TestUpdateZip == "git")
+                StartUpdate(new ReleaseInfo { Version = Updater.Current, VersionText = CurrentVersion }, p => { }, msg => Log.Write("테스트 업데이트 결과: " + msg));
+            else if (Opt.TestUpdateZip != null)
             {
                 // 테스트용: 로컬 zip을 릴리스로 보고 실제 업데이트 과정을 그대로 밟습니다.
                 string zip = System.IO.Path.GetFullPath(Opt.TestUpdateZip);

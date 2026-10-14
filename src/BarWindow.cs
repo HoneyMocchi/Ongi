@@ -21,7 +21,8 @@ namespace Ongi
         Rectangle bounds;         // 삽입 모드: 작업표시줄 클라이언트 좌표, 떠 있는 모드: 화면 좌표
         bool hover, tracking, down, dragging, closing;
         Native.POINT downPt;
-        int dragOffset;
+        int dragOffset, offset;   // offset: 지금 적용 중인 간격(이 모니터 작업표시줄 폭에 맞춰 줄인 값)
+        string monitor;           // 붙은 작업표시줄의 모니터(Screen.DeviceName). 드래그 간격을 모니터마다 따로 저장합니다
         Point dragPos;
 
         public bool Embedded { get; private set; }
@@ -112,7 +113,9 @@ namespace Ongi
             if (tb.Width < tb.Height) { Log.Write("세로 작업표시줄은 지원하지 않습니다"); return false; }
 
             Scale = Native.DpiScale(taskbar);
-            var screen = Screen.FromHandle(taskbar).Bounds;
+            var sc = Screen.FromHandle(taskbar);
+            var screen = sc.Bounds;
+            monitor = sc.DeviceName;
             BottomEdge = tb.Top > screen.Top + screen.Height / 2;
 
             int h = tb.Height;
@@ -132,9 +135,8 @@ namespace Ongi
             }
 
             int maxOffset = Math.Max(0, (int)((trayLeft - w) / Scale));
-            if (app.Cfg.Offset > maxOffset) app.Cfg.Offset = maxOffset;
-            if (app.Cfg.Offset < 0) app.Cfg.Offset = 0;
-            int x = trayLeft - w - (int)Math.Round(app.Cfg.Offset * Scale);
+            offset = Math.Max(0, Math.Min(maxOffset, app.Cfg.OffsetFor(monitor)));
+            int x = trayLeft - w - (int)Math.Round(offset * Scale);
             r = new Rectangle(Math.Max(0, x), 0, w, h);
             return true;
         }
@@ -254,7 +256,7 @@ namespace Ongi
                     down = true;
                     dragging = false;
                     Native.GetCursorPos(out downPt);
-                    dragOffset = app.Cfg.Offset;
+                    dragOffset = offset;
                     dragPos = bounds.Location;
                     Native.SetCapture(Handle);
                     break;
@@ -265,7 +267,7 @@ namespace Ongi
                         bool wasDrag = dragging;
                         dragging = false;
                         Native.ReleaseCapture();
-                        if (wasDrag) app.OnBarDragged();
+                        if (wasDrag) app.OnBarDragged(this);
                         else app.OnBarClick(this);
                     }
                     break;
@@ -273,7 +275,7 @@ namespace Ongi
                     if (down && m.LParam != Handle)
                     {
                         down = false;
-                        if (dragging) { dragging = false; app.OnBarDragged(); }
+                        if (dragging) { dragging = false; app.OnBarDragged(this); }
                     }
                     break;
                 case Native.WM_RBUTTONUP:
@@ -310,10 +312,12 @@ namespace Ongi
 
             if (Embedded)
             {
-                // 작업표시줄 안에서는 가로로만 옮깁니다.
-                app.Cfg.Offset = Math.Max(0, dragOffset - (int)Math.Round(dx / Scale));
+                // 작업표시줄 안에서는 가로로만 옮깁니다. 이 모니터의 간격만 바꾸고, 끝까지 끌어도 들어갈 수 있는 만큼만 저장합니다.
+                app.Cfg.Offsets[monitor] = Math.Max(0, dragOffset - (int)Math.Round(dx / Scale));
                 Rectangle r;
-                if (ComputeEmbedded(out r) && r != bounds)
+                bool ok = ComputeEmbedded(out r);
+                app.Cfg.Offsets[monitor] = offset;
+                if (ok && r != bounds)
                 {
                     bounds = r;
                     Native.SetWindowPos(Handle, IntPtr.Zero, r.X, r.Y, 0, 0, Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE);

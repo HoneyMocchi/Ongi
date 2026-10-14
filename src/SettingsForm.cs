@@ -164,7 +164,7 @@ namespace Ongi
         }
     }
 
-    // 숫자 증감: [ −   90초   + ]  (클릭, 휠, ←→↑↓ 키)
+    // 숫자 증감: [ +   90초   − ]  (클릭, 휠, ←→↑↓ 키)
     sealed class Stepper : UiControl
     {
         readonly int min, max, step;
@@ -197,8 +197,8 @@ namespace Ongi
             }
             float cy = Height / 2f;
             var sign = Draw.Font("Segoe UI", 15f * S);
-            Draw.Text(g, "−", sign, value > min ? T.Dim : T.Faint, Btn / 2 + 1 * S, cy, 0);
-            Draw.Text(g, "+", sign, value < max ? T.Dim : T.Faint, Width - Btn / 2 - 1 * S, cy, 0);
+            Draw.Text(g, "+", sign, value < max ? T.Dim : T.Faint, Btn / 2 + 1 * S, cy, 0);
+            Draw.Text(g, "−", sign, value > min ? T.Dim : T.Faint, Width - Btn / 2 - 1 * S, cy, 0);
             Draw.Text(g, format(value), font, Enabled ? T.Text : T.Faint, Width / 2f, cy, 0);
             FocusRing(g, r, 7 * S);
         }
@@ -213,8 +213,8 @@ namespace Ongi
         protected override void OnMouseDown(MouseEventArgs e)
         {
             Focus();
-            if (e.X < Btn) Value -= step;
-            else if (e.X > Width - Btn) Value += step;
+            if (e.X < Btn) Value += step;
+            else if (e.X > Width - Btn) Value -= step;
             base.OnMouseDown(e);
         }
 
@@ -271,7 +271,7 @@ namespace Ongi
     // 설정 창 아래 줄 오른쪽의 버전 표시입니다. 새 버전이 있으면 그 자리가 업데이트 버튼이 됩니다.
     sealed class UpdateBox : UiControl
     {
-        enum State { Version, Available, Git, ReadOnly, Busy, Restarting, Failed }
+        enum State { Version, Available, ReadOnly, Busy, Restarting, Failed }
         readonly IUpdateHost host;
         State state = State.Version;
         ReleaseInfo release;
@@ -294,8 +294,7 @@ namespace Ongi
             if (state == State.Busy || state == State.Restarting) return;
             release = c.Latest;
             state = !c.Newer ? State.Version
-                  : c.Block == UpdateBlock.GitClone ? State.Git
-                  : c.Block == UpdateBlock.ReadOnly ? State.ReadOnly : State.Available;
+                  : c.Route == UpdateRoute.ReadOnly ? State.ReadOnly : State.Available;
             Cursor = state == State.Available ? Cursors.Hand : Cursors.Default;
             TabStop = state == State.Available;
             Invalidate();
@@ -332,9 +331,6 @@ namespace Ongi
             {
                 case State.Version:
                     Draw.Text(g, "v" + host.CurrentVersion, font, T.Faint, right, cy, 1);
-                    break;
-                case State.Git:
-                    Draw.Text(g, "새 버전 " + next + " · git pull로 받기", font, T.Faint, right, cy, 1);
                     break;
                 case State.ReadOnly:
                     Draw.Text(g, "새 버전 " + next + " · 이 폴더에는 쓸 수 없음", font, T.Faint, right, cy, 1);
@@ -377,9 +373,9 @@ namespace Ongi
         readonly UiTheme t;
         readonly float s;
         readonly List<Action<Graphics>> paints = new List<Action<Graphics>>();
-        readonly Segmented mode, monitors, codexTtl, iconSize;
+        readonly Segmented mode, codexTtl, iconSize;
         readonly List<KeyValuePair<string, Toggle>> monitorToggles = new List<KeyValuePair<string, Toggle>>(); // (Screen.DeviceName, 스위치)
-        static readonly string[] MonitorModes = { "primary", "all", "custom" };
+        readonly List<string> savedMonitors;  // 창을 열 때의 모니터 목록: 스위치를 처음 상태로 돌리면 이 목록을 그대로 둡니다(빈 목록 = 주 모니터 유지)
         readonly Toggle showClaude, showCodex, autostart, alerts;
         readonly Stepper refresh, warn, crit, tokens, minutes;
         static readonly int[] TtlChoices = { 0, 5, 30, 60 };
@@ -393,6 +389,7 @@ namespace Ongi
             s = scale;
             t = new UiTheme(dark ?? Palette.SystemDark());
             var c = cfg;
+            savedMonitors = c.MonitorList.ToList();
 
             Text = "Ongi 설정";
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -414,29 +411,22 @@ namespace Ongi
             Row("위치", null, mode, W);
             iconSize = new Segmented(t, s, new[] { "작게", "보통", "크게" }, Math.Max(0, Array.IndexOf(Settings.IconSizes, c.IconSize)));
             Row("아이콘 크기", null, iconSize, W);
-            // 작업표시줄 모드에서 위젯을 붙일 모니터입니다. 모니터가 하나뿐이면 줄을 만들지 않습니다.
-            monitors = new Segmented(t, s, new[] { "주 모니터", "모든 모니터", "직접 선택" }, Math.Max(0, Array.IndexOf(MonitorModes, c.Monitors)));
+            // 작업표시줄 모드에서 위젯을 붙일 모니터를 하나씩 켜고 끕니다. 모니터가 하나뿐이면 줄을 만들지 않습니다.
             var screens = Screen.AllScreens.OrderBy(sc => sc.Bounds.X).ThenBy(sc => sc.Bounds.Y).ToArray();
             if (screens.Length > 1)
             {
-                Row("모니터", "작업표시줄 위치일 때 적용", monitors, W);
                 bool listed = screens.Any(sc => c.MonitorList.Contains(sc.DeviceName));
                 for (int i = 0; i < screens.Length; i++)
                 {
                     var sc = screens[i];
                     var tg = new Toggle(t, s, listed ? c.MonitorList.Contains(sc.DeviceName) : sc.Primary);
-                    Row(MonitorName(sc), sc.Bounds.Width + "×" + sc.Bounds.Height + " · " + Side(i, screens.Length) + (sc.Primary ? " · 주 모니터" : ""), tg, W, 14);
+                    Row(MonitorName(sc), sc.Bounds.Width + "×" + sc.Bounds.Height + " · " + Side(i, screens.Length) + (sc.Primary ? " · 주 모니터" : ""), tg, W);
                     monitorToggles.Add(new KeyValuePair<string, Toggle>(sc.DeviceName, tg));
                     // 하나도 안 고를 수는 없게 합니다.
                     tg.Changed += (o, e) => { if (!monitorToggles.Any(m => m.Value.Checked)) tg.Checked = true; };
                 }
-                Action enable = () =>
-                {
-                    monitors.Enabled = mode.Selected == 0;
-                    foreach (var m in monitorToggles) m.Value.Enabled = mode.Selected == 0 && monitors.Selected == 2;
-                };
+                Action enable = () => { foreach (var m in monitorToggles) m.Value.Enabled = mode.Selected == 0; };
                 mode.Changed += (o, e) => enable();
-                monitors.Changed += (o, e) => enable();
                 enable();
             }
             showClaude = new Toggle(t, s, c.ShowClaude);
@@ -498,7 +488,7 @@ namespace Ongi
 
             // 초기값을 다 넣은 뒤에 연결해야 창을 여는 것만으로 저장되지 않습니다.
             var live = new List<UiControl> { mode, iconSize, showClaude, showCodex, autostart, refresh, warn, crit, alerts, tokens, minutes, codexTtl };
-            if (monitorToggles.Count > 0) { live.Add(monitors); live.AddRange(monitorToggles.Select(m => (UiControl)m.Value)); }
+            live.AddRange(monitorToggles.Select(m => (UiControl)m.Value));
             foreach (var ctl in live) ctl.Changed += (o, e) => ApplyNow();
         }
 
@@ -526,16 +516,15 @@ namespace Ongi
                 paints.Add(g => { using (var pen = new Pen(t.Divider, 1)) g.DrawLine(pen, 22 * s, ly, ClientSize.Width - 22 * s, ly); });
                 y += 10 * s;
             }
-            float cy = y + 14 * s;
-            var f = Draw.Font("Segoe UI Semibold", 12.5f * s);
+            float cy = y + 15 * s;
+            var f = Draw.Font("Segoe UI Semibold", 15f * s); // 한글은 맑은 고딕 Bold로 그려집니다
             paints.Add(g => Draw.Text(g, title, f, t.Section, 22 * s, cy));
-            y += 28 * s;
+            y += 32 * s;
         }
 
-        // indent: 위 항목에 딸린 하위 항목을 들여 씁니다(논리 px).
-        void Row(string label, string hint, Control control, int W, float indent = 0)
+        void Row(string label, string hint, Control control, int W)
         {
-            float h = (hint == null ? 42 : 50) * s, cy = y + h / 2, lx = (22 + indent) * s;
+            float h = (hint == null ? 42 : 50) * s, cy = y + h / 2, lx = 22 * s;
             var body = Draw.Font("Segoe UI", 14f * s);
             var small = Draw.Font("Segoe UI", 12f * s);
             float ly = hint == null ? cy : cy - 9 * s;
@@ -576,18 +565,19 @@ namespace Ongi
         void ApplyNow()
         {
             var c = cfg;
-            string oldMode = c.Mode, oldMonitors = c.Monitors + "|" + string.Join(",", c.MonitorList);
+            string oldMode = c.Mode, oldMonitors = string.Join(",", c.MonitorList);
             bool oldClaude = c.ShowClaude, oldCodex = c.ShowCodex;
             int oldIcon = c.IconSize;
             c.Mode = mode.Selected == 1 ? "floating" : "taskbar";
             c.IconSize = Settings.IconSizes[iconSize.Selected];
+            // 지금 연결되어 있지 않은 모니터를 골라 둔 것은 그대로 둡니다.
             if (monitorToggles.Count > 0)
             {
-                c.Monitors = MonitorModes[monitors.Selected];
-                // 목록은 직접 선택일 때만 씁니다. 지금 연결되어 있지 않은 모니터를 골라 둔 것은 그대로 둡니다.
-                if (c.Monitors == "custom")
-                    c.MonitorList = c.MonitorList.Where(n => !monitorToggles.Any(m => m.Key == n))
-                        .Concat(monitorToggles.Where(m => m.Value.Checked).Select(m => m.Key)).ToList();
+                var picked = savedMonitors.Where(n => !monitorToggles.Any(m => m.Key == n))
+                    .Concat(monitorToggles.Where(m => m.Value.Checked).Select(m => m.Key)).ToList();
+                var probe = new Settings { MonitorList = savedMonitors };
+                bool unchanged = Screen.AllScreens.All(sc => monitorToggles.All(m => m.Key != sc.DeviceName || m.Value.Checked == probe.WantsMonitor(sc)));
+                c.MonitorList = unchanged ? savedMonitors.ToList() : picked;
             }
             c.ShowClaude = showClaude.Checked;
             c.ShowCodex = showCodex.Checked;
@@ -601,7 +591,7 @@ namespace Ongi
             c.Save();
             try { if (Autostart.IsEnabled() != autostart.Checked) Autostart.Set(autostart.Checked); }
             catch (Exception ex) { Log.Write("자동 실행 설정 실패: " + ex.Message); }
-            apply(oldMode != c.Mode || oldIcon != c.IconSize || oldMonitors != c.Monitors + "|" + string.Join(",", c.MonitorList) || oldClaude != c.ShowClaude || oldCodex != c.ShowCodex);
+            apply(oldMode != c.Mode || oldIcon != c.IconSize || oldMonitors != string.Join(",", c.MonitorList) || oldClaude != c.ShowClaude || oldCodex != c.ShowCodex);
         }
     }
 }
