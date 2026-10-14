@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,6 +13,7 @@ namespace Ongi
     sealed class ChatCache
     {
         public string Key, Id, Title;
+        public string AiTitle;   // 기록에서 찾은 제목(없으면 null). 다음 스캔에서 3MB까지 거슬러 올라가지 않으려고 둡니다.
         public DateTime LastUtc;
         public int TtlSec;
         public long CachedTokens;
@@ -36,7 +37,8 @@ namespace Ongi
     static class CacheScanner
     {
         const int RecentSec = 65 * 60;          // 이보다 오래 수정되지 않은 대화 기록은 보지 않습니다.
-        const int TailBytes = 3 * 1024 * 1024;  // 기록 파일 끝에서 읽을 크기
+        const int TailBytes = 3 * 1024 * 1024;  // 기록 파일 끝에서 읽을 최대 크기
+        const int QuickTailBytes = 256 * 1024;  // 먼저 읽어 보는 크기. 필요한 정보가 그 안에 없을 때만 TailBytes로 넓힙니다.
         static readonly Dictionary<string, Tuple<DateTime, long, ChatCache>> Memo = new Dictionary<string, Tuple<DateTime, long, ChatCache>>();
         static readonly Regex UuidTail = new Regex(@"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$", RegexOptions.IgnoreCase);
         // 기록 항목의 최상위 키는 ...,"uuid":"…","timestamp":"…",toolUseResult 순서입니다.
@@ -51,15 +53,27 @@ namespace Ongi
             var result = new List<ChatCache>();
             string dir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
             if (string.IsNullOrWhiteSpace(dir)) dir = Path.Combine(Paths.Home, ".claude");
-            string root = Path.Combine(dir, "projects");
-            if (!Directory.Exists(root)) return result;
-            foreach (var project in Directory.GetDirectories(root))
-                foreach (var file in Directory.GetFiles(project, "*.jsonl"))
+            var root = new DirectoryInfo(Path.Combine(dir, "projects"));
+            if (!root.Exists) return result;
+            // EnumerateFiles는 목록을 받을 때 수정 시각·크기도 함께 받아 파일마다 다시 조회하지 않습니다.
+            foreach (var project in root.EnumerateDirectories())
+                foreach (var fi in project.EnumerateFiles("*.jsonl"))
                 {
-                    var c = Memoized(file, now, f => ParseClaude(ReadTailLines(f), Path.GetFileNameWithoutExtension(f)));
+                    var c = Memoized(fi.FullName, fi, now, prev => ReadClaude(fi.FullName, Path.GetFileNameWithoutExtension(fi.Name), prev));
                     if (c != null) result.Add(c);
                 }
             return result;
+        }
+
+        // 끝 256KB만 먼저 봅니다. 마지막 요청의 시작(그 앞 요청과의 경계)이나 제목을 그 안에서 못 찾았을 때만 3MB로 넓힙니다.
+        // 제목은 지난번에 찾아 둔 것이 있으면 그것으로 대신합니다.
+        static ChatCache ReadClaude(string path, string id, ChatCache prev)
+        {
+            string known = prev != null ? prev.AiTitle : null;
+            bool cut, complete;
+            var c = ParseClaude(ReadTailLines(path, QuickTailBytes, out cut), id, known, out complete);
+            if (cut && !complete) c = ParseClaude(ReadTailLines(path, TailBytes, out cut), id, known, out complete);
+            return c;
         }
 
         // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl 한 파일이 채팅(스레드) 하나입니다.
@@ -78,37 +92,47 @@ namespace Ongi
             foreach (var day in days)
             {
                 if (!Directory.Exists(day)) continue;
-                foreach (var file in Directory.GetFiles(day, "rollout-*.jsonl"))
+                foreach (var fi in new DirectoryInfo(day).EnumerateFiles("rollout-*.jsonl"))
                 {
-                    var m = UuidTail.Match(file);
-                    string id = m.Success ? m.Groups[1].Value : Path.GetFileNameWithoutExtension(file);
+                    var m = UuidTail.Match(fi.Name);
+                    string id = m.Success ? m.Groups[1].Value : Path.GetFileNameWithoutExtension(fi.Name);
                     string title;
                     codexTitles.TryGetValue(id, out title);
-                    var c = Memoized(file + "|" + ttlOverrideMin, now, f => ParseCodex(ReadTailLines(file), id, title, ttlOverrideMin));
+                    var c = Memoized(fi.FullName + "|" + ttlOverrideMin, fi, now, prev => ReadCodex(fi.FullName, id, title, ttlOverrideMin));
                     if (c != null) result.Add(c);
                 }
             }
             return result;
         }
 
-        static ChatCache Memoized(string key, DateTime now, Func<string, ChatCache> parse)
+        static ChatCache ReadCodex(string path, string id, string title, int ttlOverrideMin)
         {
-            string path = key.Split('|')[0];
-            var fi = new FileInfo(path);
-            if (!fi.Exists || (now - fi.LastWriteTimeUtc).TotalSeconds > RecentSec) { Memo.Remove(key); return null; }
+            bool cut, complete;
+            var c = ParseCodex(ReadTailLines(path, QuickTailBytes, out cut), id, title, ttlOverrideMin, out complete);
+            if (cut && !complete) c = ParseCodex(ReadTailLines(path, TailBytes, out cut), id, title, ttlOverrideMin, out complete);
+            return c;
+        }
+
+        // parse에는 바뀌기 전 결과(없으면 null)를 넘깁니다.
+        static ChatCache Memoized(string key, FileInfo fi, DateTime now, Func<ChatCache, ChatCache> parse)
+        {
             Tuple<DateTime, long, ChatCache> hit;
-            if (Memo.TryGetValue(key, out hit) && hit.Item1 == fi.LastWriteTimeUtc && hit.Item2 == fi.Length) return hit.Item3;
+            bool known = Memo.TryGetValue(key, out hit);
+            if ((now - fi.LastWriteTimeUtc).TotalSeconds > RecentSec) { if (known) Memo.Remove(key); return null; }
+            if (known && hit.Item1 == fi.LastWriteTimeUtc && hit.Item2 == fi.Length) return hit.Item3;
             ChatCache c = null;
-            try { c = parse(path); } catch (Exception ex) { Log.Write("캐시 기록 읽기 실패: " + Path.GetFileName(path) + " " + ex.Message); }
+            try { c = parse(known ? hit.Item3 : null); } catch (Exception ex) { Log.Write("캐시 기록 읽기 실패: " + fi.Name + " " + ex.Message); }
             Memo[key] = Tuple.Create(fi.LastWriteTimeUtc, fi.Length, c);
             return c;
         }
 
-        static string[] ReadTailLines(string path)
+        // 파일 끝에서 maxBytes만큼 읽어 줄로 나눕니다. cut은 파일 앞부분을 건너뛰었는지입니다.
+        static string[] ReadTailLines(string path, int maxBytes, out bool cut)
         {
             using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
-                long start = Math.Max(0, fs.Length - TailBytes);
+                long start = Math.Max(0, fs.Length - maxBytes);
+                cut = start > 0;
                 fs.Seek(start, SeekOrigin.Begin);
                 var buf = new byte[fs.Length - start];
                 int n = 0, k;
@@ -126,6 +150,14 @@ namespace Ongi
 
         // 마지막 API 요청(requestId)의 가장 이른 기록 시각과, 그 요청이 쓴 캐시의 TTL(1시간/5분)을 찾습니다.
         internal static ChatCache ParseClaude(string[] lines, string id)
+        {
+            bool complete;
+            return ParseClaude(lines, id, null, out complete);
+        }
+
+        // knownTitle: 지난 스캔에서 찾은 제목. 있으면 제목을 찾으러 더 거슬러 올라가지 않습니다.
+        // complete: 마지막 요청의 시작 경계와 제목을 모두 확인했는지(아니면 더 넓게 읽어야 함)
+        static ChatCache ParseClaude(string[] lines, string id, string knownTitle, out bool complete)
         {
             string title = null, lastReq = null, cwd = null;
             DateTime? first = null;
@@ -180,9 +212,11 @@ namespace Ongi
                 if (rid != lastReq && ttl != 0)
                 {
                     usageDone = true;
-                    if (title != null) break;
+                    if (title != null || knownTitle != null) break;
                 }
             }
+            title = title ?? knownTitle;
+            complete = usageDone && title != null;
             if (!first.HasValue) return null;
             // 응답 기록은 블록이 끝날 때 남으므로, 생각이 긴 요청은 실제 요청 시각보다 늦게 찍힙니다.
             // 바로 앞 사용자 입력(또는 도구 결과) 시각이 15분 안이면 그 시각을 요청 시각으로 씁니다.
@@ -191,12 +225,19 @@ namespace Ongi
                 if (t <= first.Value && (first.Value - t).TotalMinutes < 15 && (start == first.Value || t > start)) start = t;
             return new ChatCache
             {
-                Key = "claude", Id = id, LastUtc = start, TtlSec = ttl == 0 ? 300 : ttl, CachedTokens = cached,
+                Key = "claude", Id = id, LastUtc = start, TtlSec = ttl == 0 ? 300 : ttl, CachedTokens = cached, AiTitle = title,
                 Title = title ?? (string.IsNullOrEmpty(cwd) ? "제목 없음" : Path.GetFileName(cwd.TrimEnd('\\', '/'))),
             };
         }
 
         internal static ChatCache ParseCodex(string[] lines, string id, string title, int ttlOverrideMin)
+        {
+            bool complete;
+            return ParseCodex(lines, id, title, ttlOverrideMin, out complete);
+        }
+
+        // complete: 마지막 token_count와 모델(turn_context)을 모두 찾았는지
+        static ChatCache ParseCodex(string[] lines, string id, string title, int ttlOverrideMin, out bool complete)
         {
             DateTime? last = null;
             long cached = 0;
@@ -220,6 +261,7 @@ namespace Ongi
                     cwd = J.Str(J.Get(o, "payload", "cwd"));
                 }
             }
+            complete = last.HasValue && model != null;
             if (!last.HasValue) return null;
             return new ChatCache
             {

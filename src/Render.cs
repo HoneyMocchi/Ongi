@@ -242,26 +242,19 @@ namespace Ongi
                 DrawBadge(g, cx + 14f * k, cy - 13.5f * k, k, extras.Badge, Palette.Fade(extras.BadgeFill, opacity), extras.BadgeText);
         }
 
-        // 링 안쪽을 잘라 액체를 채웁니다. 수면은 아주 얕은 물결입니다.
+        // 링 안쪽을 잘라 액체를 채웁니다. 수면은 평평하게 그립니다(물결 계산 없이 사각형 하나).
         static void DrawLiquid(Graphics g, GaugeShape shape, float cx, float cy, float r, float stroke, float k, double level, Color color)
         {
             float inset = stroke / 2 + 0.9f * k, ir = r - inset, span = 2 * ir;
             float top = cy + ir - span * (float)Math.Min(1, level);
             using (var clip = new GraphicsPath())
-            using (var water = new GraphicsPath())
             using (var b = new SolidBrush(color))
             {
                 if (shape == GaugeShape.Circle) clip.AddEllipse(cx - ir, cy - ir, span, span);
                 else clip.AddPath(Draw.Rounded(new RectangleF(cx - ir, cy - ir, span, span), Math.Max(1, r * 0.42f - inset)), false);
-                var pts = new List<PointF>();
-                for (float x = cx - ir - 2; x <= cx + ir + 2; x += 1.5f * k)
-                    pts.Add(new PointF(x, top + 0.55f * k * (float)Math.Sin((x - cx) / (2.6f * k))));
-                pts.Add(new PointF(cx + ir + 2, cy + ir + 2));
-                pts.Add(new PointF(cx - ir - 2, cy + ir + 2));
-                water.AddPolygon(pts.ToArray());
                 var saved = g.Clip;
                 g.SetClip(clip, CombineMode.Intersect);
-                g.FillPath(b, water);
+                g.FillRectangle(b, cx - ir - 1, top, span + 2, cy + ir + 1 - top);
                 g.Clip = saved;
             }
         }

@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyProduct("Ongi")]
 // 버전을 올릴 때는 아래 세 줄을 함께 바꿉니다. package.ps1은 InformationalVersion으로 zip 이름을 정합니다.
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.3.1")]
 
 namespace Ongi
 {
