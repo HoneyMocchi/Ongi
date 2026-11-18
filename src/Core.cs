@@ -208,6 +208,7 @@ namespace Ongi
         public readonly int RetryAfterSec;
         public bool RateLimited;
         public bool SignedOut;               // 로그인 정보 자체가 없음(작업표시줄에서 아이콘을 숨김)
+        public bool Unauthorized;            // 서버가 토큰을 거절함(401)
         public FetchException(string msg, int retryAfterSec = 0) : base(msg) { RetryAfterSec = retryAfterSec; }
     }
 

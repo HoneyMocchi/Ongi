@@ -38,7 +38,7 @@ namespace Ongi
                 int code = (int)resp.StatusCode, retry;
                 int.TryParse(resp.Headers["Retry-After"], out retry);
                 resp.Dispose();
-                if (code == 401) throw new FetchException("인증 실패(401) — " + authHint, 300);
+                if (code == 401) throw new FetchException("인증 실패(401) — " + authHint, 300) { Unauthorized = true };
                 if (code == 403) throw new FetchException("접근 거부(403)", 300);
                 if (code == 429) throw new FetchException("요청 제한(429) — 잠시 뒤 재시도", Math.Max(retry, 300)) { RateLimited = true };
                 throw new FetchException("서버 응답 " + code, 120);
@@ -46,26 +46,32 @@ namespace Ongi
         }
     }
 
-    // Claude Code의 OAuth 토큰으로 /api/oauth/usage를 조회합니다. 토큰은 읽기만 하고 갱신·저장하지 않습니다.
+    // Claude Code의 OAuth 토큰으로 /api/oauth/usage를 조회합니다. 토큰 파일은 읽기만 합니다.
+    // 토큰이 만료됐거나 서버가 거절하면 Claude Code CLI가 갱신하게 한 뒤 다시 읽습니다(ClaudeCli).
     sealed class ClaudeProvider : IProvider
     {
         public Snapshot Fetch()
         {
-            string dir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-            if (string.IsNullOrWhiteSpace(dir)) dir = Path.Combine(Paths.Home, ".claude");
-            string credPath = Path.Combine(dir, ".credentials.json");
+            string credPath = ClaudeCli.CredentialsPath;
             if (!File.Exists(credPath)) throw new FetchException("Claude Code 로그인 정보가 없습니다", 600) { SignedOut = true };
 
-            var oauth = J.Get(J.Parse(Util.ReadShared(credPath)), "claudeAiOauth");
-            string token = J.Str(J.Get(oauth, "accessToken"));
-            if (string.IsNullOrEmpty(token)) throw new FetchException("구독(OAuth) 로그인이 아닙니다", 600) { SignedOut = true };
-            var exp = J.Num(J.Get(oauth, "expiresAt"));
-            if (exp.HasValue && exp.Value > 0 && Util.FromUnix(exp.Value) < DateTime.UtcNow)
-                throw new FetchException("토큰 만료 — Claude Code를 쓰면 자동 갱신됩니다", 120);
+            var oauth = ClaudeCli.ReadOAuth(credPath);
+            if (string.IsNullOrEmpty(ClaudeCli.Token(oauth))) throw new FetchException("구독(OAuth) 로그인이 아닙니다", 600) { SignedOut = true };
+            if (!ClaudeCli.Fresh(oauth)) oauth = ClaudeCli.Refresh(credPath);
 
+            try { return Query(oauth); }
+            catch (FetchException ex) when (ex.Unauthorized)
+            {
+                // 만료 시각 전이라도 서버가 토큰을 거절하면 한 번 갱신해 다시 묻습니다.
+                return Query(ClaudeCli.Refresh(credPath, ClaudeCli.Token(oauth)));
+            }
+        }
+
+        static Snapshot Query(object oauth)
+        {
             var headers = new Dictionary<string, string>
             {
-                { "Authorization", "Bearer " + token },
+                { "Authorization", "Bearer " + ClaudeCli.Token(oauth) },
                 { "anthropic-beta", "oauth-2025-04-20" },
             };
             var r = J.Parse(Http.Get("https://api.anthropic.com/api/oauth/usage", headers, "Claude Code에서 다시 로그인하세요"));

@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyProduct("Ongi")]
 // 버전을 올릴 때는 아래 세 줄을 함께 바꿉니다. package.ps1은 InformationalVersion으로 zip 이름을 정합니다.
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.4.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.5.0")]
 
 namespace Ongi
 {
@@ -292,6 +292,26 @@ namespace Ongi
                   pace(50, 120) == PaceState.Fast && pace(100, 10) == PaceState.Spent &&
                   Pace.Of(new UsageWindow { Percent = 0 }, now, out u0, out e0) == PaceState.Unknown && e0 < 0,
                   "주간 페이스: 여유(10%·26% 경과) · 적정 · 과속(50%·29% 경과) · 소진 · 리셋 모름");
+
+            // 토큰 갱신: 가짜 CLI(auth status는 그대로 두고, -p일 때만 새 토큰을 씀)로 단계별 대체와 재시도 간격을 봅니다.
+            string credDir = Path.Combine(Path.GetTempPath(), "ongi-selftest-claude");
+            Directory.CreateDirectory(credDir);
+            string cred = Path.Combine(credDir, ".credentials.json");
+            string okCli = Path.Combine(credDir, "ok.cmd"), noCli = Path.Combine(credDir, "no.cmd");
+            File.WriteAllText(okCli, "@echo off\r\nif \"%1\"==\"auth\" exit /b 0\r\n> \"%~dp0.credentials.json\" echo {\"claudeAiOauth\":{\"accessToken\":\"new\",\"expiresAt\":4102444800000}}\r\n");
+            File.WriteAllText(noCli, "@echo off\r\nexit /b 1\r\n");
+            Func<string, Func<object>, string> outcome = (token, f) =>
+            {
+                File.WriteAllText(cred, "{\"claudeAiOauth\":{\"accessToken\":\"" + token + "\",\"expiresAt\":1000}}");
+                try { return ClaudeCli.Token(f()); } catch (FetchException ex) { return ex.Message; }
+            };
+            string missing = outcome("old", () => ClaudeCli.Refresh(cred, null, null));
+            string renewed = outcome("old", () => ClaudeCli.Refresh(cred, null, okCli));
+            string failed = outcome("old", () => ClaudeCli.Refresh(cred, null, noCli));
+            string waited = outcome("old", () => ClaudeCli.Refresh(cred, null, okCli));
+            Directory.Delete(credDir, true);
+            check(missing.Contains("Claude Code를 한 번 실행") && renewed == "new" && failed.Contains("다시 로그인") && waited == failed,
+                  "Claude 토큰 갱신: CLI 없음 안내 · auth status → 짧은 요청 순서로 갱신 · 실패 뒤 15분 동안 재시도 안 함");
 
             Say(fails == 0 ? "셀프테스트 모두 통과" : "셀프테스트 실패 " + fails + "건");
             return fails;
